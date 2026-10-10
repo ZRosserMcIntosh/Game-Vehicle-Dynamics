@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            cxx: g++
+            name: linux-gcc
+          - os: ubuntu-24.04
+            cxx: clang++
+            name: linux-clang
+          - os: windows-2022
+            cxx: cl
+            name: windows-msvc
+          - os: macos-14
+            cxx: clang++
+            name: macos-clang
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: bash
+        run: |
+          # MSVC has not been exercised yet: warnings are reported but not fatal there.
+          WERROR=ON
+          if [ "${{ matrix.cxx }}" != "cl" ]; then export CXX=${{ matrix.cxx }}; else WERROR=OFF; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DORD_WARNINGS_AS_ERRORS=$WERROR
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (ASan + UBSan)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DORD_WARNINGS_AS_ERRORS=ON -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

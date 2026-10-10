@@ -1,0 +1,61 @@
+# ---- Build outputs (CMake / core library) ----
+/build*/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+Testing/
+
+# ---- Unreal Engine ----
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+.vs/
+*.VC.db
+*.opensdf
+*.opendb
+*.sdf
+*.suo
+*.xcodeproj
+*.xcworkspace
+*.sln
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+# Never commit Unreal Engine source or marketplace content
+Engine/
+**/Marketplace/**
+*.pak
+
+# ---- C/C++ ----
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.gch
+*.pch
+
+# ---- Editors / OS ----
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Python tooling ----
+__pycache__/
+*.pyc
+.venv/
+
+# ---- Telemetry captures (may contain personal data; keep out of the repo) ----
+captures/
+*.forzacap

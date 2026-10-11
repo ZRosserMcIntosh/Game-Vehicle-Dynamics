@@ -12,8 +12,9 @@ Vec3 horizontal(const Vec3& v) { return {v.x, v.y, 0}; }
 }  // namespace
 
 void GroundPrefetchCache::sampleStrip(const GroundQuery& source, Strip& s, Real refZ, int nAlong, int nAcross) {
-    s.nAlong = std::max(nAlong, 2);
     s.nAcross = std::max(nAcross, 1);
+    // Never exceed the per-strip budget (keeps memory bounded and reserved).
+    s.nAlong = std::max(2, std::min(nAlong, std::max(2, settings_.maxSamplesPerStrip / s.nAcross)));
     s.dAlong = s.length / (s.nAlong - 1);
     s.dAcross = s.nAcross > 1 ? 2 * s.halfWidth / (s.nAcross - 1) : 0;
     s.samples.resize(static_cast<std::size_t>(s.nAlong * s.nAcross));
@@ -37,7 +38,11 @@ void GroundPrefetchCache::sampleStrip(const GroundQuery& source, Strip& s, Real 
 void GroundPrefetchCache::rebuild(const GroundQuery& source, const GroundStripRequest* requests, std::size_t count) {
     raysLastRebuild_ = 0;
     roughStrips_ = 0;
-    if (strips_.size() < count) strips_.resize(count);
+    if (strips_.size() < count) {
+        strips_.resize(count);
+        // Reserve the full per-strip budget once, so steady-state rebuilds never allocate.
+        for (Strip& st : strips_) st.samples.reserve(static_cast<std::size_t>(std::max(settings_.maxSamplesPerStrip, 2)));
+    }
     stripCount_ = count;
     const Settings& cfg = settings_;
     for (std::size_t k = 0; k < count; ++k) {

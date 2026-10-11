@@ -82,6 +82,7 @@ private:
     LodSettings settings_;
     std::vector<Lod1Car> lod1_;
     std::vector<GroundStripRequest> requests_;
+    std::vector<std::pair<Real, std::size_t>> candidates_;  // reused promotion candidates (no per-frame allocation)
     Real acc1_ = 0, acc2_ = 0;
     LodStats stats_;
 };

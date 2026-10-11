@@ -23,6 +23,7 @@
 #include "CoreMinimal.h"
 #include "Templates/Function.h"
 #include "Templates/UniquePtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 
 class FOrdSimCallback;
 class FOrdVehicleSim;
@@ -56,9 +57,20 @@ public:
 	/**
 	 * Game thread. Unregisters the callback. Chaos frees it (and the vehicle it
 	 * owns) on its own schedule once no physics step can still be using it.
-	 * Safe to call repeatedly.
+	 * Before unregistering it pushes a final input without a body, so even if
+	 * Chaos ran our callback once more in this frame's step, it would not
+	 * dereference a proxy that is being destroyed in the same frame.
+	 * Safe to call repeatedly, and safe after the world's solver is gone (then
+	 * the solver's own teardown owns the callback; nothing is dereferenced).
 	 */
 	void Unregister();
+
+	/**
+	 * Game thread. Forgets the body proxy and publishes that to the physics
+	 * thread in this frame's input. Call as soon as the body's physics state is
+	 * being destroyed (the proxy dies with this frame's physics data).
+	 */
+	void ClearBody();
 
 	bool IsRegistered() const { return Callback != nullptr; }
 
@@ -89,4 +101,8 @@ private:
 	FOrdSimCallback* Callback = nullptr;
 	Chaos::FPBDRigidsSolver* Solver = nullptr;
 	FSingleParticlePhysicsProxy* Proxy = nullptr;
+	/** The world whose solver owns Callback: Unregister() only talks to that solver while it still exists. */
+	TWeakObjectPtr<UWorld> SolverWorld;
+	/** Last input pushed (re-pushed with Proxy = null by ClearBody/Unregister). */
+	TUniquePtr<FOrdGameInput> LastInput;
 };

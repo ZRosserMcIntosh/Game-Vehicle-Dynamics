@@ -17,6 +17,7 @@
 #include "OrdChaosBridge.h"
 #include "OrdConversions.h"
 #include "OrdFrame.h"
+#include "OrdGroundHorizon.h"
 #include "OrdUnrealGround.h"
 #include "OrdVehicleSim.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
@@ -48,42 +49,75 @@ struct FOrdComponentRuntime
 {
 	FOrdChaosVehicleLink Link;
 
-	// Ground caches. A cache is mutable only while the pool holds the sole
-	// reference: once published in an input it is immutable until the physics
-	// thread and the Chaos input pool have released it.
-	static constexpr int32 PoolSize = 6;
-	std::array<std::shared_ptr<ord::GroundPrefetchCache>, PoolSize> CachePool;
+	// ---- Ground caches ----
+	// A cache is mutable only while the pool holds the sole reference. Once
+	// published in an input it is immutable until every other holder (Chaos'
+	// input objects, the callback's latest-input copy, FOrdVehicleSim::Ground)
+	// has released it. Holders at any time: one per game frame the physics
+	// thread has not consumed yet, plus two on the physics thread. The pool
+	// grows on demand up to MaxPoolSize so a lagging physics thread does not
+	// force an allocation every frame.
+	static constexpr std::size_t MaxPoolSize = 16;
+	std::vector<std::shared_ptr<ord::GroundPrefetchCache>> CachePool;
 	ord::GroundPrefetchCache::Settings CacheSettings;
 	std::vector<ord::GroundStripRequest> Requests;  // latest from the physics thread
+	double RequestTime = 0.0;                       // core time those requests describe
 	int32 TransientCacheAllocations = 0;
+
+	// ---- Adaptive strip horizon (see UOpenRoadVehicleComponent::bAdaptiveGroundHorizon) ----
+	OrdGround::FHorizonState Horizon;
+	double FrameCacheAge = 0.0; // s, max age in the last frame (diagnostics)
+	uint32 FrameMisses = 0;     // misses in the last frame (diagnostics)
+	int32 FrameSteps = 0;       // snapshots consumed in the last frame
 
 	FOrdSimSnapshot Latest;  // last valid physics snapshot
 	bool bHasSnapshot = false;
+	int32 NumWheels = 0;
 
 	std::unique_ptr<ord::TelemetryRecorder> Recorder;
 	double FixedDt = 1.0 / 240.0;
 	bool bReportedMassMismatch = false;
+	bool bReportedCoupling = false;
 
+	FOrdComponentRuntime() { CachePool.reserve(MaxPoolSize); }
+
+	/** Game thread. Returns a cache no other thread references, configured with CacheSettings. */
 	std::shared_ptr<ord::GroundPrefetchCache> AcquireCache()
 	{
 		for (std::shared_ptr<ord::GroundPrefetchCache>& Slot : CachePool)
 		{
-			if (!Slot)
-			{
-				Slot = std::make_shared<ord::GroundPrefetchCache>(CacheSettings);
-				return Slot;
-			}
 			if (Slot.use_count() == 1)
 			{
 				// The other threads released their references with acq_rel
-				// decrements; this fence orders their last reads before our rebuild.
+				// decrements; this fence orders their last reads before our
+				// rebuild. No ABA: with use_count() == 1 nobody else holds a
+				// shared_ptr (or a raw pointer) to copy from, so the count
+				// cannot rise again behind our back.
 				std::atomic_thread_fence(std::memory_order_acquire);
+				if (Slot->settings().horizon != CacheSettings.horizon)
+				{
+					// Settings are fixed per cache object: replace it in place
+					// (exclusively owned, so this is safe; strip memory regrows once).
+					*Slot = ord::GroundPrefetchCache(CacheSettings);
+				}
 				return Slot;
 			}
 		}
-		// Every pooled cache is still referenced (inputs not yet recycled): correct, but allocates.
+		if (CachePool.size() < MaxPoolSize)
+		{
+			CachePool.push_back(std::make_shared<ord::GroundPrefetchCache>(CacheSettings));
+			return CachePool.back();
+		}
+		// Every pooled cache is still referenced (physics thread far behind): correct, but allocates.
 		++TransientCacheAllocations;
 		return std::make_shared<ord::GroundPrefetchCache>(CacheSettings);
+	}
+
+	/** Game thread, once per frame after consuming the snapshots (see OrdGroundHorizon.h). */
+	void UpdateHorizon(double FrameDt, double PhysicsTimeThisFrame, bool bAdaptive, double MinHorizon, double MaxHorizon)
+	{
+		CacheSettings.horizon = OrdGround::UpdateHorizon(Horizon, FrameDt, PhysicsTimeThisFrame, FrameCacheAge, FixedDt,
+		                                                 bAdaptive, MinHorizon, MaxHorizon);
 	}
 };
 
@@ -101,7 +135,7 @@ UOpenRoadVehicleComponent::UOpenRoadVehicleComponent()
 void UOpenRoadVehicleComponent::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!ActivateVehicle())
+	if (!ActivateVehicle() && !bPendingReactivate)
 	{
 		SetComponentTickEnabled(false);
 	}
@@ -109,12 +143,43 @@ void UOpenRoadVehicleComponent::BeginPlay()
 
 void UOpenRoadVehicleComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// EndPlay runs before the owner's components are unregistered (actor
+	// destroy, level unload, PIE end), i.e. before the body's proxy is queued
+	// for destruction: the unregistration below reaches Chaos first.
 	if (IsCapturingTelemetry())
 	{
 		StopTelemetryCapture();
 	}
 	DeactivateVehicle(TEXT("EndPlay"));
+	BindBody(nullptr);
+	bPendingReactivate = false;
 	Super::EndPlay(EndPlayReason);
+}
+
+void UOpenRoadVehicleComponent::OnUnregister()
+{
+	if (Runtime && Runtime->Link.IsRegistered())
+	{
+		DeactivateVehicle(TEXT("component unregistered"));
+	}
+	Super::OnUnregister();
+}
+
+void UOpenRoadVehicleComponent::BindBody(UPrimitiveComponent* NewBody)
+{
+	if (Body == NewBody)
+	{
+		return;
+	}
+	if (Body)
+	{
+		Body->OnComponentPhysicsStateChanged.RemoveDynamic(this, &UOpenRoadVehicleComponent::HandleBodyPhysicsStateChanged);
+	}
+	Body = NewBody;
+	if (Body)
+	{
+		Body->OnComponentPhysicsStateChanged.AddUniqueDynamic(this, &UOpenRoadVehicleComponent::HandleBodyPhysicsStateChanged);
+	}
 }
 
 bool UOpenRoadVehicleComponent::ActivateVehicle()
@@ -123,10 +188,17 @@ bool UOpenRoadVehicleComponent::ActivateVehicle()
 	AActor* Owner = GetOwner();
 	UWorld* World = GetWorld();
 	UPrimitiveComponent* Root = Owner ? Cast<UPrimitiveComponent>(Owner->GetRootComponent()) : nullptr;
+	// Listen to the root's physics state even if it cannot be driven yet, so a
+	// later (re)creation of the body re-activates the vehicle.
+	BindBody(Root);
 	if (!World || !Root || !Root->IsSimulatingPhysics())
 	{
-		UE_LOG(LogOpenRoad, Error, TEXT("OpenRoad: %s needs a root UPrimitiveComponent with Simulate Physics enabled."),
-		       *GetNameSafe(Owner));
+		UE_LOG(LogOpenRoad, Error, TEXT("OpenRoad: %s needs a root UPrimitiveComponent with Simulate Physics enabled%s."),
+		       *GetNameSafe(Owner), Root ? TEXT(" (the vehicle activates as soon as it simulates)") : TEXT(""));
+		// Simulation may be switched on later (SetSimulatePhysics(true) does not
+		// re-create the physics state, so no Created event would arrive): keep
+		// ticking and retry once the body simulates.
+		bPendingReactivate = Root != nullptr;
 		return false;
 	}
 	if (!Definition)
@@ -143,7 +215,7 @@ bool UOpenRoadVehicleComponent::ActivateVehicle()
 		return false;
 	}
 
-	ord::VehicleFidelity Fidelity;
+	ord::VehicleFidelity Fidelity;  // LOD0 defaults, including the envelope probes
 	Fidelity.unsprungMass = bUnsprungMass;
 	Fidelity.contactSamples = ContactSamples;
 	Fidelity.telemetry = true;
@@ -177,10 +249,16 @@ bool UOpenRoadVehicleComponent::ActivateVehicle()
 	Initial.angularVelocity = OrdFrame::AngularVelocityFromUe(Root->GetPhysicsAngularVelocityInRadians());
 	Vehicle->setChassisState(Initial);
 
+	// A re-activation keeps an ongoing telemetry capture.
+	std::unique_ptr<ord::TelemetryRecorder> KeptRecorder = Runtime ? std::move(Runtime->Recorder) : nullptr;
 	Runtime = MakePimpl<FOrdComponentRuntime>();
 	FOrdComponentRuntime& R = *Runtime;
-	R.CacheSettings.horizon = GroundPredictionSeconds;
+	R.Recorder = std::move(KeptRecorder);
+	R.Horizon.Horizon = FMath::Max(static_cast<double>(GroundPredictionSeconds), 1.0 / 60.0);
+	R.CacheSettings.horizon = R.Horizon.Horizon;
+	R.NumWheels = static_cast<int32>(Def.wheels.size());
 	Vehicle->groundPrefetchRequests(R.Requests);
+	R.RequestTime = Vehicle->time();
 
 	float FixedStep = 0.0f;
 	if (FOrdChaosVehicleLink::GetAsyncPhysicsSettings(FixedStep) && FixedStep > 0.0f)
@@ -199,36 +277,46 @@ bool UOpenRoadVehicleComponent::ActivateVehicle()
 		UE_LOG(LogOpenRoad, Error, TEXT("OpenRoad: %s could not attach to Chaos: %s"), *GetNameSafe(Owner), *Error);
 		return false;
 	}
-
-	Body = Root;
-	Root->OnComponentPhysicsStateChanged.AddDynamic(this, &UOpenRoadVehicleComponent::HandleBodyPhysicsStateChanged);
+	bPendingReactivate = false;
 	return true;
 }
 
 void UOpenRoadVehicleComponent::DeactivateVehicle(const TCHAR* Reason)
 {
 	check(IsInGameThread());
-	if (Body)
-	{
-		Body->OnComponentPhysicsStateChanged.RemoveDynamic(this, &UOpenRoadVehicleComponent::HandleBodyPhysicsStateChanged);
-	}
 	if (Runtime && Runtime->Link.IsRegistered())
 	{
 		Runtime->Link.Unregister();  // the vehicle is destroyed with the callback, after its last step
 		UE_LOG(LogOpenRoad, Verbose, TEXT("OpenRoad: %s deactivated (%s)."), *GetNameSafe(GetOwner()), Reason);
 	}
-	Body = nullptr;
 }
 
 void UOpenRoadVehicleComponent::HandleBodyPhysicsStateChanged(UPrimitiveComponent* ChangedComponent,
                                                               EComponentPhysicsStateChange::Type StateChange)
 {
-	if (StateChange == EComponentPhysicsStateChange::Destroyed && ChangedComponent == Body)
+	if (ChangedComponent != Body || !HasBegunPlay())
 	{
-		UE_LOG(LogOpenRoad, Warning, TEXT("OpenRoad: %s body physics state destroyed; vehicle deactivated."),
-		       *GetNameSafe(GetOwner()));
-		DeactivateVehicle(TEXT("body physics state destroyed"));
-		SetComponentTickEnabled(false);
+		return;
+	}
+	if (StateChange == EComponentPhysicsStateChange::Destroyed)
+	{
+		if (Runtime && Runtime->Link.IsRegistered())
+		{
+			UE_LOG(LogOpenRoad, Log, TEXT("OpenRoad: %s body physics state destroyed; vehicle deactivated until it is re-created."),
+			       *GetNameSafe(GetOwner()));
+			// Whether this fires before or after the body's TermBody(), the proxy
+			// is destroyed with THIS frame's physics data; the input without a
+			// body and the unregistration travel in the same frame's data.
+			Runtime->Link.ClearBody();
+			DeactivateVehicle(TEXT("body physics state destroyed"));
+		}
+	}
+	else if (StateChange == EComponentPhysicsStateChange::Created)
+	{
+		// Deferred to the next tick: re-configuring mass properties from inside
+		// the body's physics-state creation is avoided on purpose.
+		bPendingReactivate = true;
+		SetComponentTickEnabled(true);
 	}
 }
 
@@ -243,6 +331,16 @@ void UOpenRoadVehicleComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 
 	if (!Runtime || !Runtime->Link.IsRegistered())
 	{
+		// Re-activate once the body's physics state exists again.
+		if (bPendingReactivate && IsValid(Body) && Body->IsSimulatingPhysics() && Body->GetBodyInstance() &&
+		    Body->GetBodyInstance()->IsValidBodyInstance())
+		{
+			bPendingReactivate = false;
+			if (ActivateVehicle())
+			{
+				UE_LOG(LogOpenRoad, Log, TEXT("OpenRoad: %s re-activated on its new physics body."), *GetNameSafe(GetOwner()));
+			}
+		}
 		return;
 	}
 	if (!IsValid(Body))
@@ -253,16 +351,23 @@ void UOpenRoadVehicleComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	FOrdComponentRuntime& R = *Runtime;
 
 	// (a) Consume every physics snapshot since last frame (one per physics step).
-	R.Link.ConsumeOutputs([&R](const FOrdSimSnapshot& Snapshot)
+	R.FrameCacheAge = 0.0;
+	R.FrameMisses = 0;
+	double PhysicsTimeThisFrame = 0.0;
+	R.FrameSteps = R.Link.ConsumeOutputs([&R, &PhysicsTimeThisFrame](const FOrdSimSnapshot& Snapshot)
 	{
+		PhysicsTimeThisFrame += Snapshot.DeltaTime;
 		if (Snapshot.NumStripRequests > 0)
 		{
 			R.Requests.assign(Snapshot.StripRequests.begin(), Snapshot.StripRequests.begin() + Snapshot.NumStripRequests);
+			R.RequestTime = Snapshot.StripRequestTime;
 		}
 		if (!Snapshot.bValid)
 		{
 			return;
 		}
+		R.FrameCacheAge = FMath::Max(R.FrameCacheAge, Snapshot.GroundCacheAge);
+		R.FrameMisses += Snapshot.GroundCacheMissesStep;
 		R.Latest = Snapshot;
 		R.bHasSnapshot = true;
 		if (R.Recorder && Snapshot.bHasTelemetry)
@@ -271,21 +376,36 @@ void UOpenRoadVehicleComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		}
 	});
 
-	if (R.bHasSnapshot && !R.bReportedMassMismatch && Definition)
+	// Checked after 0.5 s of simulation: the BeginPlay body setup reaches the physics thread a few steps late.
+	if (R.bHasSnapshot && !R.bReportedMassMismatch && Definition && R.Latest.SimTime > 0.5)
 	{
 		const double MassError = std::abs(R.Latest.HostMassKg - Definition->MassKg) / FMath::Max(1.0f, Definition->MassKg);
 		const FVector InertiaError = (R.Latest.HostInertiaKgM2 - Definition->InertiaKgM2) / Definition->InertiaKgM2;
-		if (R.Latest.ComMismatchCm > 1.0 || MassError > 0.01 || InertiaError.GetAbsMax() > 0.05)
+		if (R.Latest.ComMismatchCm > 1.0 || MassError > 0.01 || InertiaError.GetAbsMax() > 0.05 || R.Latest.RotationOfMassDeg > 1.0)
 		{
 			UE_LOG(LogOpenRoad, Warning,
 			       TEXT("OpenRoad: %s Chaos mass properties differ from the definition (CoM off by %.1f cm, mass %.1f kg, "
-			            "inertia %s kg*m^2). Forces stay consistent, but handling parity with headless runs will suffer."),
-			       *GetNameSafe(GetOwner()), R.Latest.ComMismatchCm, R.Latest.HostMassKg, *R.Latest.HostInertiaKgM2.ToCompactString());
+			            "inertia %s kg*m^2, principal frame rotated %.1f deg). Forces stay consistent, but handling parity "
+			            "with headless runs will suffer."),
+			       *GetNameSafe(GetOwner()), R.Latest.ComMismatchCm, R.Latest.HostMassKg,
+			       *R.Latest.HostInertiaKgM2.ToCompactString(), R.Latest.RotationOfMassDeg);
 		}
 		R.bReportedMassMismatch = true;
 	}
+	// One-time coupling report after ~2 s of simulation (README items 5 and 8).
+	if (R.bHasSnapshot && !R.bReportedCoupling && R.Latest.SimTime > 2.0)
+	{
+		UE_LOG(LogOpenRoad, Log,
+		       TEXT("OpenRoad: %s coupling check: host-sync error %.3f cm / %.3f deg (max %.3f cm); velocity check CoM %.2f cm/s, "
+		            "origin %.2f cm/s (the ~0 one is what Chaos V() refers to)."),
+		       *GetNameSafe(GetOwner()), R.Latest.HostSyncPositionErrorCm, R.Latest.HostSyncAngleErrorDeg,
+		       R.Latest.HostSyncMaxPositionErrorCm, R.Latest.VelocityCheckComCmS, R.Latest.VelocityCheckOriginCmS);
+		R.bReportedCoupling = true;
+	}
 
-	// (b) Ground: one batch of line traces into a fresh (unshared) cache.
+	// (b) Ground: one batch of line traces into a fresh (unshared) cache, with
+	// a strip horizon that covers the measured latency until the next cache.
+	R.UpdateHorizon(DeltaTime, PhysicsTimeThisFrame, bAdaptiveGroundHorizon, GroundPredictionSeconds, MaxGroundPredictionSeconds);
 	std::shared_ptr<ord::GroundPrefetchCache> Cache = R.AcquireCache();
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(OpenRoad_GroundPrefetch);
@@ -306,6 +426,7 @@ void UOpenRoadVehicleComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	Input.Assists = OrdConvert::MakeAssistConfig(Preset, InputDevice, AssistOverrides);
 	Input.AssistsRevision = AssistsRevision;
 	Input.Ground = std::move(Cache);
+	Input.GroundRequestTime = R.RequestTime;
 	Input.VehicleRateHz = VehicleRateHz;
 	Input.bDebugDraw = bDebugDraw || CVarOpenRoadDebug.GetValueOnGameThread() != 0;
 	Input.DebugForceScale = CVarOpenRoadDebugForceScale.GetValueOnGameThread();
@@ -376,6 +497,69 @@ void UOpenRoadVehicleComponent::SetAssistOverrides(const FOpenRoadAssistOverride
 	++AssistsRevision;
 }
 
+void UOpenRoadVehicleComponent::SetAbsEnabled(bool bEnabled)
+{
+	AssistOverrides.bOverrideAbs = true;
+	AssistOverrides.bAbs = bEnabled;
+	++AssistsRevision;
+}
+
+void UOpenRoadVehicleComponent::SetTractionControl(EOpenRoadIntervention Level)
+{
+	AssistOverrides.bOverrideTractionControl = true;
+	AssistOverrides.TractionControl = Level;
+	++AssistsRevision;
+}
+
+void UOpenRoadVehicleComponent::SetStabilityControl(EOpenRoadIntervention Level)
+{
+	AssistOverrides.bOverrideStabilityControl = true;
+	AssistOverrides.StabilityControl = Level;
+	++AssistsRevision;
+}
+
+void UOpenRoadVehicleComponent::SetShiftMode(EOpenRoadShiftMode Mode)
+{
+	AssistOverrides.bOverrideShiftMode = true;
+	AssistOverrides.ShiftMode = Mode;
+	++AssistsRevision;
+}
+
+namespace
+{
+EOpenRoadIntervention FromCore(ord::InterventionLevel Level)
+{
+	switch (Level)
+	{
+	case ord::InterventionLevel::Off: return EOpenRoadIntervention::Off;
+	case ord::InterventionLevel::Sport: return EOpenRoadIntervention::Sport;
+	case ord::InterventionLevel::Full: return EOpenRoadIntervention::Full;
+	}
+	return EOpenRoadIntervention::Off;
+}
+}  // namespace
+
+FOpenRoadAssistState UOpenRoadVehicleComponent::GetAssistState() const
+{
+	FOpenRoadAssistState Out;
+	const ord::AssistConfig Config = OrdConvert::MakeAssistConfig(Preset, InputDevice, AssistOverrides);
+	Out.bAbs = Config.abs;
+	Out.TractionControl = FromCore(Config.tractionControl);
+	Out.StabilityControl = FromCore(Config.stabilityControl);
+	Out.ShiftMode = Config.shiftMode == ord::ShiftMode::Manual ? EOpenRoadShiftMode::Manual : EOpenRoadShiftMode::Automatic;
+	if (Runtime && Runtime->bHasSnapshot && Runtime->Latest.bHasTelemetry)
+	{
+		const ord::AssistReport& Report = Runtime->Latest.Telemetry.assists;
+		for (std::size_t I = 0; I < ord::kMaxWheels; ++I)
+		{
+			Out.bAbsActive |= Report.absActive[I];
+			Out.bEscActive |= Report.escBrakeTorque[I] > 0.0;
+		}
+		Out.TcsThrottleCut = static_cast<float>(Report.tcsThrottleCut);
+	}
+	return Out;
+}
+
 float UOpenRoadVehicleComponent::GetSpeedKmh() const
 {
 	return Runtime && Runtime->bHasSnapshot ? static_cast<float>(Runtime->Latest.SpeedKmh) : 0.0f;
@@ -399,6 +583,71 @@ bool UOpenRoadVehicleComponent::IsVehicleActive() const
 int64 UOpenRoadVehicleComponent::GetGroundCacheMisses() const
 {
 	return Runtime && Runtime->bHasSnapshot ? static_cast<int64>(Runtime->Latest.GroundCacheMisses) : 0;
+}
+
+int32 UOpenRoadVehicleComponent::GetNumWheels() const
+{
+	return Runtime ? Runtime->NumWheels : 0;
+}
+
+bool UOpenRoadVehicleComponent::GetWheelState(int32 WheelIndex, FOpenRoadWheelState& OutState) const
+{
+	OutState = FOpenRoadWheelState();
+	if (!Runtime || !Runtime->bHasSnapshot || !Runtime->Latest.bHasTelemetry)
+	{
+		return false;
+	}
+	const ord::TelemetryFrame& T = Runtime->Latest.Telemetry;
+	if (WheelIndex < 0 || static_cast<std::size_t>(WheelIndex) >= FMath::Min<std::size_t>(T.wheelCount, ord::kMaxWheels))
+	{
+		return false;
+	}
+	const ord::WheelTelemetry& W = T.wheels[static_cast<std::size_t>(WheelIndex)];
+	OutState.bContact = W.contact;
+	OutState.LoadN = static_cast<float>(W.load);
+	OutState.SlipRatio = static_cast<float>(W.slipRatio);
+	// Lateral quantities change sign with the Y mirror between ISO and UE.
+	OutState.SlipAngleDeg = static_cast<float>(-FMath::RadiansToDegrees(W.slipAngle));
+	OutState.LongitudinalForceN = static_cast<float>(W.fx);
+	OutState.LateralForceN = static_cast<float>(-W.fy);
+	OutState.ForceOverLoad = W.load > 1.0 ? static_cast<float>(std::sqrt(W.fx * W.fx + W.fy * W.fy) / W.load) : 0.0f;
+	OutState.CompressionCm = static_cast<float>(W.compression * ord::host::kUeUnitsPerMetre);
+	OutState.SteerAngleDeg = static_cast<float>(-FMath::RadiansToDegrees(W.steerAngle));
+	OutState.AngularVelocity = static_cast<float>(W.omega);
+	OutState.bAbsActive = T.assists.absActive[static_cast<std::size_t>(WheelIndex)];
+	OutState.SurfaceId = W.surfaceId;
+	return true;
+}
+
+FOpenRoadDiagnostics UOpenRoadVehicleComponent::GetDiagnostics() const
+{
+	FOpenRoadDiagnostics D;
+	if (!Runtime)
+	{
+		return D;
+	}
+	const FOrdComponentRuntime& R = *Runtime;
+	D.GroundHorizonSeconds = static_cast<float>(R.CacheSettings.horizon);
+	D.GroundCacheAgeSeconds = static_cast<float>(R.FrameCacheAge);
+	D.GroundCacheMissesLastFrame = static_cast<int32>(R.FrameMisses);
+	D.TransientCacheAllocations = R.TransientCacheAllocations;
+	D.PhysicsStepsLastFrame = R.FrameSteps;
+	if (R.bHasSnapshot)
+	{
+		const FOrdSimSnapshot& S = R.Latest;
+		D.GroundCacheMisses = static_cast<int64>(S.GroundCacheMisses);
+		D.HostSyncPositionErrorCm = static_cast<float>(S.HostSyncPositionErrorCm);
+		D.HostSyncAngleErrorDeg = static_cast<float>(S.HostSyncAngleErrorDeg);
+		D.HostSyncMaxPositionErrorCm = static_cast<float>(S.HostSyncMaxPositionErrorCm);
+		D.VelocityCheckComCmS = static_cast<float>(S.VelocityCheckComCmS);
+		D.VelocityCheckOriginCmS = static_cast<float>(S.VelocityCheckOriginCmS);
+		D.ComMismatchCm = static_cast<float>(S.ComMismatchCm);
+		D.HostMassKg = static_cast<float>(S.HostMassKg);
+		D.HostInertiaKgM2 = S.HostInertiaKgM2;
+		D.RotationOfMassDeg = static_cast<float>(S.RotationOfMassDeg);
+		D.bFaulted = S.bFaulted;
+	}
+	return D;
 }
 
 void UOpenRoadVehicleComponent::SetDebugDrawEnabled(bool bEnabled)

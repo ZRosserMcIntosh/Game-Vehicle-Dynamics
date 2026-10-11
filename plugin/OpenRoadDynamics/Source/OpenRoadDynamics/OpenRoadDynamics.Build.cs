@@ -29,6 +29,9 @@ public class OpenRoadDynamics : ModuleRules
 		{
 			"Chaos",
 			"ChaosSolverEngine",
+			// Demo pawn only (AOpenRoadDemoVehicle): runtime-created Enhanced Input actions.
+			"EnhancedInput",
+			"InputCore",
 		});
 
 		// Adds the Chaos/physics defines and dependencies for this target.

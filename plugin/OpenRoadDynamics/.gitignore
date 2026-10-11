@@ -6,3 +6,4 @@
 # Unreal build output
 /Binaries/
 /Intermediate/
+__pycache__/

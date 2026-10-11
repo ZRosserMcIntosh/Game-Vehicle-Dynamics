@@ -103,11 +103,110 @@ TEST_CASE("ground cache: queries outside the strips extrapolate instead of falli
 }
 
 TEST_CASE("rate decoupling: 60 Hz host + 4 substeps + ground cache stays within 10% on rough roads") {
+    // Like-for-like: both runs see the ground through the per-frame cache and
+    // are compared with rate-independent metrics (peak heave, 60 Hz-window accel).
     RunConfig ref = base(1000);
+    ref.prefetch = true;
     RunConfig h = base(240);
     h.hostHz = 60;
     h.prefetch = true;
-    CHECK_NEAR(curbStrike(h, 60).rmsVerticalAccelG / curbStrike(ref, 60).rmsVerticalAccelG, 1.0, 0.10);
-    CHECK_NEAR(pothole(h, 60).rmsVerticalAccelG / pothole(ref, 60).rmsVerticalAccelG, 1.0, 0.10);
+    for (Real kmh : {60.0, 120.0}) {
+        const RoughRoadResult a = curbStrike(ref, kmh), b = curbStrike(h, kmh);
+        CHECK_NEAR(b.maxHeave / a.maxHeave, 1.0, 0.10);
+        CHECK_NEAR(b.rmsFrameAccelG / a.rmsFrameAccelG, 1.0, 0.10);
+    }
+    CHECK_NEAR(pothole(h, 60).rmsFrameAccelG / pothole(ref, 60).rmsFrameAccelG, 1.0, 0.10);
     CHECK_NEAR(cobblestones(h, 40, true).rmsVerticalAccelG / cobblestones(ref, 40, true).rmsVerticalAccelG, 1.0, 0.05);
+}
+
+TEST_CASE("host coupling: chassis pose error per host step stays sub-millimetre on a rough road") {
+    RunConfig h = base(240);
+    h.hostHz = 60;
+    h.prefetch = true;
+    // Run the curb scenario, then inspect the vehicle's host-sync diagnostics via a fresh drive.
+    Vehicle v(h.vehicle, h.assists);
+    TestTrackGround g([](Real x, Real y) { return 0.03 * std::sin(x / 2.0) + 0.01 * std::sin(x / 0.7 + y); });
+    v.reset({0, 0, 0.6}, 0, g);
+    v.selectGearForSpeed(25);
+    v.placeOnGround(0, 0, 0, g, 25);
+    v.setChassisMode(ChassisMode::External, false);
+    DriverInput in;
+    in.throttle = 0.3;
+    for (int f = 0; f < 60 * 5; ++f) {
+        in.steer = 0.2 * std::sin(f / 30.0);
+        v.stepSubstepped(1.0 / 60, 4, in, g);
+        RigidBodyState s = v.state();
+        const ChassisForces& cf = v.chassisForces();
+        // Host: plain semi-implicit Euler at 60 Hz (a different integrator than the substeps).
+        const Vec3 com = s.position + s.orientation.rotate(h.vehicle.centerOfMass);
+        s.velocity += cf.force * (1.0 / 60 / h.vehicle.mass);
+        const Mat3 R = s.orientation.toMatrix();
+        const Mat3 inv = R * Mat3::diagonal({1 / h.vehicle.inertia.x, 1 / h.vehicle.inertia.y, 1 / h.vehicle.inertia.z}) * R.transposed();
+        s.angularVelocity += inv * cf.torque * (1.0 / 60);
+        const Real ang = length(s.angularVelocity) / 60;
+        if (ang > 1e-12) s.orientation = Quat::fromAxisAngle(s.angularVelocity, ang) * s.orientation;
+        s.position = com + s.velocity * (1.0 / 60) - s.orientation.rotate(h.vehicle.centerOfMass);
+        v.setChassisState(s);
+    }
+    CHECK(v.hostSync().syncs == 300);
+    CHECK(v.hostSync().maxPositionError < 0.003);   // m
+    CHECK(v.hostSync().maxAngleError < 0.003);      // rad
+    CHECK(isFinite(v.state().position));
+}
+
+TEST_CASE("envelope probes: no load on flat ground, better curb convergence across rates") {
+    // Flat ground: identical static loads with and without probes.
+    RunConfig a = base(240), b = base(240);
+    b.fidelity.envelopeProbes = 0;
+    Vehicle va(a.vehicle, a.assists, a.fidelity), vb(b.vehicle, b.assists, b.fidelity);
+    FlatGround g;
+    va.reset({0, 0, 0.6}, 0, g);
+    vb.reset({0, 0, 0.6}, 0, g);
+    for (std::size_t w = 0; w < 4; ++w) CHECK_NEAR(va.telemetry().wheels[w].load, vb.telemetry().wheels[w].load, 1e-6);
+    // 8 cm curb at 120 km/h through the ground cache: 240 Hz vs 2000 Hz peak heave.
+    auto heaveErr = [](int probes) {
+        RunConfig lo = base(240), hi = base(2000);
+        lo.prefetch = hi.prefetch = true;
+        lo.fidelity.envelopeProbes = hi.fidelity.envelopeProbes = probes;
+        return std::abs(curbStrike(lo, 120).maxHeave / curbStrike(hi, 120).maxHeave - 1.0);
+    };
+    const Real with = heaveErr(3), without = heaveErr(0);
+    CHECK(with < 0.10);
+    CHECK(without > with);
+}
+
+TEST_CASE("ground cache: a 100 ms game-thread hitch at 200 km/h degrades gracefully (extrapolation keeps the car on the road)") {
+    TestTrackGround world([](Real x, Real y) { return 0.3 * std::sin(x / 15.0) + 0.05 * std::sin(y / 4.0); });
+    for (int adaptive = 0; adaptive < 2; ++adaptive) {
+        Vehicle v(vehicles::referenceSportsRwd(), makePreset(DrivingPreset::Sport));
+        v.reset({0, 0, 1.0}, 0, world);
+        v.selectGearForSpeed(kmhToMs(200));
+        v.placeOnGround(0, 0, 0, world, kmhToMs(200));
+        GroundPrefetchCache cache;
+        std::vector<GroundStripRequest> req;
+        DriverInput in;
+        in.throttle = 0.7;
+        const Real frame = 1.0 / 60;
+        Real lastFrameDt = frame;
+        for (int f = 0; f < 120; ++f) {
+            const bool hitch = f >= 60 && f < 66;  // game thread misses 6 frames (100 ms)
+            if (!hitch) {
+                if (adaptive) cache.setHorizon(1.5 * std::max(lastFrameDt, frame));
+                req.clear();
+                v.groundPrefetchRequests(req);
+                cache.rebuild(world, req.data(), req.size());
+            }
+            // The game thread knows a hitch happened only afterwards: frame 66 sees a 100 ms dt.
+            lastFrameDt = (f == 66) ? 6 * frame : frame;
+            for (int k = 0; k < 4; ++k) v.step(frame / 4, in, cache);
+            CHECK(isFinite(v.state().position));
+        }
+        // Still on the road (no fall-through), never faulted.
+        const Vec3 c = v.centerOfMassWorld();
+        CHECK(c.z - world.heightAt(c.x, c.y) > 0.2);
+        CHECK(c.z - world.heightAt(c.x, c.y) < 1.0);
+        // Strips run out during the hitch either way (the game thread cannot know
+        // in advance); the adaptive horizon only helps once slow frames are measured.
+        CHECK(cache.misses() > 0);
+    }
 }

@@ -512,6 +512,9 @@ RoughRoadResult roughRun(const RunConfig& cfgIn, Real speedKmh, TestTrackGround:
     Real staticSum = 0, accSum = 0, loadSum = 0, loadSq = 0;
     int staticN = 0, accN = 0, loadN = 0;
     DriverInput in;
+    Real z0 = sim.com().z, frameT = 0, vzFrame = sim.vehicle.state().velocity.z, frameAcc2 = 0;
+    int frames = 0;
+    constexpr Real kFrame = 1.0 / 60.0;
     for (Real t = 0; t < 20.0 && sim.com().x < xEnd + 6.0; t += sim.dt) {
         holdSpeed(in, sim.vehicle.telemetry().speed, v0);
         sim.step(in);
@@ -521,6 +524,19 @@ RoughRoadResult roughRun(const RunConfig& cfgIn, Real speedKmh, TestTrackGround:
             break;
         }
         const Real x = sim.com().x;
+        if (x < kFeatureX - 4.0) z0 = sim.com().z;
+        frameT += sim.dt;
+        if (frameT >= kFrame - 1e-9) {
+            const Real vz = sim.vehicle.state().velocity.z;
+            if (x > kFeatureX - 3.5 && x < xEnd + 3.5) {
+                const Real a = (vz - vzFrame) / frameT;
+                frameAcc2 += a * a;
+                ++frames;
+            }
+            vzFrame = vz;
+            frameT = 0;
+        }
+        if (x > kFeatureX - 3.5 && x < xEnd + 3.5) r.maxHeave = std::max(r.maxHeave, sim.com().z - z0);
         const bool before = x > kFeatureX - 9.0 && x < kFeatureX - 4.0;
         const bool during = x > kFeatureX - 3.5 && x < xEnd + 3.5;
         bool airborne = false;
@@ -542,6 +558,7 @@ RoughRoadResult roughRun(const RunConfig& cfgIn, Real speedKmh, TestTrackGround:
             if (airborne) r.wheelAirborneTime += sim.dt;
         }
     }
+    r.rmsFrameAccelG = frames ? std::sqrt(frameAcc2 / frames) / kGravity : 0;
     r.staticLoad = staticN ? staticSum / staticN : 0;
     r.rmsVerticalAccelG = accN ? std::sqrt(accSum / accN) / kGravity : 0;
     if (loadN) {
@@ -797,3 +814,4 @@ TransitionResult lodTransition(Real speedKmh) {
 }
 
 }  // namespace ord::scenarios
+

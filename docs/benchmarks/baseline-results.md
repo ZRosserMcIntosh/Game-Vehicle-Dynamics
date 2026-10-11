@@ -15,17 +15,17 @@ Fictional reference vehicles; flat dry asphalt (frictionScale 1.0) unless noted;
 
 | Preset | 0-100 km/h (s) | 100-0 km/h (m) | Brake mean decel (g) | Skidpad R40 max lat (g) | Step steer 80 km/h yaw rise (s) | Peak driven slip | Max TCS cut |
 |---|---|---|---|---|---|---|---|
-| FUN | 9.744 | 40.38 | 0.97 | 0.89 | 0.13 | 0.26 | 1.00 |
-| SPORT | 9.366 | 40.38 | 0.97 | 0.86 | 0.17 | 0.30 | 0.53 |
-| SIMULATION | 9.133 | 53.30 | 0.74 | 0.86 | 0.17 | 0.32 | 0.00 |
+| FUN | 9.744 | 40.26 | 0.98 | 0.89 | 0.13 | 0.26 | 1.00 |
+| SPORT | 9.366 | 40.26 | 0.98 | 0.86 | 0.17 | 0.30 | 0.53 |
+| SIMULATION | 9.133 | 53.24 | 0.74 | 0.86 | 0.17 | 0.32 | 0.00 |
 
 ## ORD Reference Saloon AWD
 
 | Preset | 0-100 km/h (s) | 100-0 km/h (m) | Brake mean decel (g) | Skidpad R40 max lat (g) | Step steer 80 km/h yaw rise (s) | Peak driven slip | Max TCS cut |
 |---|---|---|---|---|---|---|---|
-| FUN | 4.502 | 37.52 | 1.05 | 0.94 | 0.17 | 0.32 | 0.93 |
-| SPORT | 4.183 | 37.52 | 1.05 | 0.94 | 0.21 | 0.34 | 0.40 |
-| SIMULATION | 4.033 | 48.34 | 0.81 | 0.94 | 0.21 | 0.35 | 0.00 |
+| FUN | 4.502 | 37.79 | 1.04 | 0.94 | 0.17 | 0.32 | 0.93 |
+| SPORT | 4.183 | 37.79 | 1.04 | 0.94 | 0.21 | 0.34 | 0.40 |
+| SIMULATION | 4.033 | 48.31 | 0.81 | 0.94 | 0.21 | 0.35 | 0.00 |
 
 ### Wet vs dry braking (ORD Reference Sports RWD, ABS on vs off)
 
@@ -58,18 +58,18 @@ Fictional reference vehicles; flat dry asphalt (frictionScale 1.0) unless noted;
 
 ### Rough roads: rate x contact samples (ORD Reference Sports RWD, SIMULATION)
 
-RMS body vertical acceleration (g) over the feature, and engine ground rays per simulated second.
+Rate-fair metrics: peak CoM heave (m) and body vertical acceleration averaged over 60 Hz windows (g, what a
+60 fps camera/player perceives). Cobblestones (texture): RMS per-step body acceleration (g). Rays: engine ground
+queries per simulated second (direct = every contact sample and envelope probe, every step).
 
-| Configuration | Curb 8 cm @60 | Pothole 6 cm @60 | Cobbles (geometry) @40 | Cobbles (texture) @40 | Rays/s (curb) | Rays/s (texture cobbles) |
-|---|---|---|---|---|---|---|
-| direct 1000 Hz, 5 samples (reference) | 0.314 | 0.106 | 0.022 | 0.024 | 20000 | 20000 |
-| direct 120 Hz, 1 sample | 0.278 | 0.101 | 0.123 | 0.131 | 480 | 480 |
-| direct 240 Hz, 1 sample | 0.311 | 0.124 | 0.093 | 0.105 | 960 | 960 |
-| direct 120 Hz, 5 samples | 0.264 | 0.096 | 0.022 | 0.024 | 2400 | 2400 |
-| direct 240 Hz, 5 samples | 0.292 | 0.101 | 0.022 | 0.024 | 4800 | 4800 |
-| direct 360 Hz, 8 samples | 0.301 | 0.103 | 0.030 | 0.033 | 11520 | 11520 |
-| host 60 Hz x4 substeps, 5 samples, ground cache | 0.293 | 0.109 | 0.051 | 0.024 | 1363 | 960 |
-| host 60 Hz x6 substeps, 8 samples, ground cache | 0.352 | 0.095 | 0.032 | 0.033 | 1363 | 960 |
+| Configuration | Curb 8 cm @120 heave | Curb @120 a60 | Curb 8 cm @60 a60 | Pothole 6 cm @60 a60 | Cobbles (texture) @40 | Rays/s (curb) | Rays/s (texture cobbles) |
+|---|---|---|---|---|---|---|---|
+| cached 2000 Hz, 5 samples (reference) | 0.0110 | 0.276 | 0.293 | 0.103 | 0.025 | 2542 | 1202 |
+| direct 240 Hz, 1 sample (no patch) | 0.0025 | 0.205 | 0.290 | 0.099 | 0.105 | 960 | 960 |
+| direct 240 Hz, 5 samples | 0.0104 | 0.246 | 0.293 | 0.094 | 0.024 | 10560 | 10560 |
+| cached 240 Hz, 5 samples | 0.0108 | 0.264 | 0.273 | 0.101 | 0.024 | 2543 | 1203 |
+| host 60 Hz x4 substeps, 5 samples, ground cache | 0.0105 | 0.255 | 0.270 | 0.097 | 0.024 | 2511 | 1200 |
+| host 60 Hz x6 substeps, 8 samples, ground cache | 0.0080 | 0.234 | 0.246 | 0.098 | 0.034 | 2511 | 1200 |
 
 ### Fidelity tiers
 
@@ -88,20 +88,20 @@ Scale: 1 player (LOD0: 60 Hz host x4, ground cache) + up to 16 LOD1 + N LOD2, ri
 
 | LOD2 agents | Max LOD1 | Promotions | LOD0 ms/frame | LOD1 ms/frame | LOD2 ms/frame | Total ms/frame | Rays/frame LOD0 / LOD1 / LOD2 |
 |---|---|---|---|---|---|---|---|
-| 100 | 15 | 23 | 0.040 | 0.157 | 0.038 | 0.235 | 20.0 / 65.4 / 5.4 |
-| 300 | 16 | 37 | 0.040 | 0.189 | 0.107 | 0.336 | 20.0 / 66.2 / 17.8 |
-| 1000 | 16 | 54 | 0.042 | 0.207 | 0.335 | 0.584 | 20.0 / 64.6 / 61.5 |
+| 100 | 15 | 23 | 0.062 | 0.161 | 0.039 | 0.262 | 24.0 / 65.4 / 5.4 |
+| 300 | 16 | 37 | 0.061 | 0.188 | 0.109 | 0.358 | 24.0 / 66.2 / 17.8 |
+| 1000 | 16 | 54 | 0.065 | 0.218 | 0.350 | 0.633 | 24.0 / 64.6 / 61.5 |
 
 ### Timestep sensitivity (ORD Reference Sports RWD, SIMULATION preset)
 
 | Rate (Hz) | 0-100 (s) | 100-0 (m) | Skidpad (g) | Step-steer yaw (rad/s) | Cost (us/step) |
 |---|---|---|---|---|---|
-| 60.000 | 6.350 | 47.409 | 0.995 | 0.263 | 4.391 |
-| 120.000 | 6.250 | 47.886 | 0.995 | 0.263 | 4.448 |
-| 240.000 | 6.225 | 48.073 | 0.996 | 0.263 | 4.438 |
-| 360.000 | 6.256 | 48.152 | 0.996 | 0.263 | 4.687 |
-| 480.000 | 6.237 | 48.176 | 0.996 | 0.263 | 4.562 |
-| 1000.000 | 6.280 | 48.227 | 0.996 | 0.263 | 4.498 |
+| 60.000 | 6.350 | 47.401 | 0.995 | 0.263 | 6.088 |
+| 120.000 | 6.250 | 47.886 | 0.995 | 0.263 | 6.232 |
+| 240.000 | 6.225 | 48.073 | 0.996 | 0.263 | 5.852 |
+| 360.000 | 6.256 | 48.152 | 0.996 | 0.263 | 6.354 |
+| 480.000 | 6.237 | 48.176 | 0.996 | 0.263 | 5.701 |
+| 1000.000 | 6.280 | 48.227 | 0.996 | 0.263 | 5.706 |
 
 ### Stability & conservation (ORD Reference Sports RWD)
 
@@ -111,9 +111,9 @@ Scale: 1 player (LOD0: 60 Hz host x4, ground cache) + up to 16 LOD1 + N LOD2, ri
 | Drop 0.25 m: bounce peaks (m) | 0.496 0.482 0.481 0.481 |
 | Coast 100 km/h, no drag/rolling: loss (km/h per s) | 0.000 |
 | Coast: speed ever increased | no |
-| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.114 |
-| Speed bump: peak vertical accel (g) | 1.330 |
-| Speed bump: airborne time (s) | 0.164 |
+| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.117 |
+| Speed bump: peak vertical accel (g) | 1.420 |
+| Speed bump: airborne time (s) | 0.192 |
 | 20% grade, brakes held 10 s: drift (m) | 0.001 |
 | 20% grade, neutral, no brakes 3 s: roll-back (m) | 7.976 |
 
@@ -125,9 +125,9 @@ Scale: 1 player (LOD0: 60 Hz host x4, ground cache) + up to 16 LOD1 + N LOD2, ri
 | Drop 0.25 m: bounce peaks (m) | 0.483 0.471 0.470 0.470 |
 | Coast 100 km/h, no drag/rolling: loss (km/h per s) | 0.002 |
 | Coast: speed ever increased | no |
-| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.158 |
-| Speed bump: peak vertical accel (g) | 1.268 |
-| Speed bump: airborne time (s) | 0.208 |
+| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.162 |
+| Speed bump: peak vertical accel (g) | 1.253 |
+| Speed bump: airborne time (s) | 0.228 |
 | 20% grade, brakes held 10 s: drift (m) | 0.001 |
 | 20% grade, neutral, no brakes 3 s: roll-back (m) | 7.899 |
 
@@ -136,11 +136,11 @@ Scale: 1 player (LOD0: 60 Hz host x4, ground cache) + up to 16 LOD1 + N LOD2, ri
 | Check | Result |
 |---|---|
 | Drop 0.25 m: energy ever increased | no |
-| Drop 0.25 m: bounce peaks (m) | 0.501 0.481 0.479 0.479 |
+| Drop 0.25 m: bounce peaks (m) | 0.500 0.480 0.479 0.479 |
 | Coast 100 km/h, no drag/rolling: loss (km/h per s) | 0.000 |
 | Coast: speed ever increased | no |
-| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.114 |
-| Speed bump: peak vertical accel (g) | 1.193 |
-| Speed bump: airborne time (s) | 0.128 |
+| Speed bump 8 cm @ 40 km/h: peak compression (m) | 0.118 |
+| Speed bump: peak vertical accel (g) | 1.185 |
+| Speed bump: airborne time (s) | 0.150 |
 | 20% grade, brakes held 10 s: drift (m) | 0.002 |
 | 20% grade, neutral, no brakes 3 s: roll-back (m) | 7.998 |

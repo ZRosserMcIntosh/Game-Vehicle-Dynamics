@@ -4,6 +4,8 @@
 
 #include "ord/linear_solve.hpp"
 
+#include <algorithm>
+
 namespace ord {
 
 namespace {
@@ -205,6 +207,8 @@ void Vehicle::staticWheelLoads(std::array<Real, kMaxWheels>& load) const {
 
 void Vehicle::placeOnGround(Real x, Real y, Real yaw, const GroundQuery& ground, Real vx, Real vy, Real yawRate) {
     if (!valid_) return;
+    havePrediction_ = false;
+    forces_ = {};
     const std::size_t nw = def_.wheels.size();
     std::array<Real, kMaxWheels> load{};
     staticWheelLoads(load);
@@ -287,6 +291,37 @@ void Vehicle::reset(const Vec3& position, Real yaw, const GroundQuery& ground) {
 }
 
 void Vehicle::setChassisState(const RigidBodyState& s) {
+    if (havePrediction_) {
+        // Compare the host's integrated chassis with our own substep prediction.
+        const Vec3 comP = predicted_.position + predicted_.orientation.rotate(def_.centerOfMass);
+        const Vec3 comH = s.position + s.orientation.rotate(def_.centerOfMass);
+        const Quat dq = s.orientation * predicted_.orientation.conjugate();
+        hostSync_.positionError = length(comH - comP);
+        hostSync_.angleError = 2.0 * std::acos(clamp(std::abs(dq.w), 0.0, 1.0));
+        hostSync_.maxPositionError = std::max(hostSync_.maxPositionError, hostSync_.positionError);
+        hostSync_.maxAngleError = std::max(hostSync_.maxAngleError, hostSync_.angleError);
+        ++hostSync_.syncs;
+        // Unsprung wheels have their own inertia: when the host's body pose or
+        // velocity differs from the one the substeps advanced, the *wheel*
+        // stays where it was and the suspension absorbs the difference (instead
+        // of the tire penetration jumping by the pose error every host step).
+        // Large differences (teleports, respawns) are not carried over.
+        const Vec3 upH = s.orientation.rotate({0, 0, 1});
+        const Vec3 comHP = comH, comPP = comP;
+        for (std::size_t w = 0; w < def_.wheels.size(); ++w) {
+            if (!usesUnsprung(w)) continue;
+            const Vec3 hpLocal = def_.wheels[w].suspension.hardpoint;
+            const Vec3 hpP = predicted_.position + predicted_.orientation.rotate(hpLocal);
+            const Vec3 hpH = s.position + s.orientation.rotate(hpLocal);
+            const Real dx = dot(hpP - hpH, upH);
+            if (std::abs(dx) > kMaxCarriedPoseError) continue;
+            const Vec3 vP = predicted_.velocity + cross(predicted_.angularVelocity, hpP - comPP);
+            const Vec3 vH = s.velocity + cross(s.angularVelocity, hpH - comHP);
+            wheels_[w].compression += dx;
+            wheels_[w].compressionRate += dot(vP - vH, upH);
+        }
+        havePrediction_ = false;
+    }
     updateAccelEstimate(s.velocity, s.angularVelocity, lastDt_);
     body_ = s;
 }
@@ -310,22 +345,34 @@ void Vehicle::groundPrefetchRequests(std::vector<GroundStripRequest>& out) const
         r.center = hp - up * (wd.suspension.travel - ws.compression + wd.tire.radius);
         r.velocity = body_.velocity + cross(body_.angularVelocity, r.center - com);
         r.heading = q.rotate({std::cos(ws.steer), std::sin(ws.steer), 0});
-        r.halfLength = wd.tire.patchHalfLength;
+        // Cover the envelope probes too (they reach 0.7 r ahead of / behind the patch).
+        const bool probes = fidelity_.contactSamples > 1 && fidelity_.envelopeProbes > 0 && usesUnsprung(w);
+        r.halfLength = probes ? std::max(wd.tire.patchHalfLength, 0.7 * wd.tire.radius + 0.02) : wd.tire.patchHalfLength;
         r.halfWidth = wd.tire.patchHalfWidth;
         out.push_back(r);
     }
 }
 
 int Vehicle::sampleContact(std::size_t w, const Vec3& hp, const Vec3& up, const Vec3& heading,
-                           const GroundQuery& ground, std::array<Sample, kMaxContactSamples>& out) {
+                           const GroundQuery& ground, std::array<Sample, kMaxContactSamples>& out, int& patchCount) {
     const WheelDef& wd = def_.wheels[w];
     std::array<Offset, kMaxContactSamples> layout{};
-    const int n = sampleLayout(fidelity_.contactSamples, layout);
+    patchCount = sampleLayout(fidelity_.contactSamples, layout);
+    int n = patchCount;
+    // Envelope probes at fractions of the radius ahead of and behind the patch.
+    static constexpr Real kProbeFraction[kMaxEnvelopeProbes] = {0.40, 0.55, 0.70};
+    const int probes = (patchCount > 1 && usesUnsprung(w)) ? std::clamp(fidelity_.envelopeProbes, 0, kMaxEnvelopeProbes) : 0;
+    for (int side = -1; side <= 1; side += 2)
+        for (int j = 0; j < probes; ++j) {
+            const Real sOff = std::max(kProbeFraction[j] * wd.tire.radius, wd.tire.patchHalfLength + 0.01);
+            layout[static_cast<std::size_t>(n++)] = {side * sOff / std::max(wd.tire.patchHalfLength, 1e-6), 0.0};
+        }
     const Vec3 lateral = cross(up, heading);
     const Real maxDist = kRayStartOffset + wd.suspension.travel + wd.tire.radius + kRayExtra;
     for (int k = 0; k < n; ++k) {
         const Real s = layout[k].s * wd.tire.patchHalfLength;
         const Real l = layout[k].l * wd.tire.patchHalfWidth;
+        out[k].probe = k >= patchCount;
         const Vec3 origin = hp + heading * s + lateral * l + up * kRayStartOffset;
         const GroundHit h = ground.raycast(origin, -up, maxDist);
         ++groundQueries_;
@@ -359,7 +406,7 @@ void Vehicle::stepSubstepped(Real hostDt, int substeps, const DriverInput& input
     if (!valid_) return;
     substeps = std::max(substeps, 1);
     const Real h = hostDt / substeps;
-    if (chassisMode_ == ChassisMode::Internal || substeps == 1) {
+    if (chassisMode_ == ChassisMode::Internal) {
         for (int k = 0; k < substeps; ++k) step(h, input, ground);
         return;
     }
@@ -378,6 +425,8 @@ void Vehicle::stepSubstepped(Real hostDt, int substeps, const DriverInput& input
         in.shiftUp = in.shiftDown = false;  // edge-triggered inputs apply once
     }
     forces_ = {impulse / hostDt, angularImpulse / hostDt};
+    predicted_ = body_;
+    havePrediction_ = true;
     body_ = start;  // the host owns the chassis; it calls setChassisState() next
     prevVelocity_ = start.velocity;
     prevAngularVelocity_ = start.angularVelocity;
@@ -409,8 +458,9 @@ void Vehicle::computeStep(Real dt, const DriverInput& input, const GroundQuery& 
         ws.steer = wheelSteerAngle(w, cmd.steerAngle);
         const Vec3 headingWorld = q.rotate({std::cos(ws.steer), std::sin(ws.steer), 0});
         ws.hit = GroundHit{};
-        const int n = sampleContact(w, hp, up, headingWorld, ground, samples);
-        const Real weight = 1.0 / n;
+        int patchCount = 1;
+        const int n = sampleContact(w, hp, up, headingWorld, ground, samples, patchCount);
+        const Real weight = 1.0 / patchCount;
 
         // ARB partner (explicit coupling to the other wheel's previous compression).
         const AxleDef& ax = def_.axles[static_cast<std::size_t>(axleOf_[w])];
@@ -437,16 +487,29 @@ void Vehicle::computeStep(Real dt, const DriverInput& input, const GroundQuery& 
             Real P0 = 0, Pprev = 0, Wact = 0;
             std::array<Real, kMaxContactSamples> pen0{}, ru{};
             std::array<Vec3, kMaxContactSamples> radial{};
+            const Vec3 wc0 = hp - up * (sd.travel - x0);
             for (int k = 0; k < n; ++k) {
-                pen0[k] = samples[k].hit ? (sd.travel - x0) + r - samples[k].d : -1.0;
+                Real slope = 1.0;  // d(penetration)/d(compression), negated
+                if (!samples[k].hit) {
+                    pen0[k] = -1.0;
+                } else if (samples[k].probe) {
+                    // Radial penetration of the ground point into the tire circle.
+                    const Vec3 d = wc0 - samples[k].point;
+                    const Real dist = length(d);
+                    pen0[k] = r - dist;
+                    radial[k] = dist > 1e-9 ? d / dist : up;
+                    slope = std::max(0.0, dot(radial[k], up));
+                } else {
+                    pen0[k] = (sd.travel - x0) + r - samples[k].d;  // flat footprint
+                    // Patch samples push along their ground normal (tilted on curb and
+                    // pothole edges, which produces the longitudinal impact force).
+                    radial[k] = samples[k].normal;
+                }
                 if (pen0[k] <= 0) continue;
-                // Each sample pushes along its ground normal (tilted on curb and
-                // pothole edges, which is what produces the longitudinal impact force).
-                radial[k] = samples[k].normal;
                 ru[k] = std::max(0.0, dot(radial[k], up));
                 P0 += weight * pen0[k] * ru[k];
                 Pprev += weight * ws.prevPen[k] * ru[k];
-                Wact += weight * ru[k];
+                Wact += weight * ru[k] * slope;
             }
             // Suspension spring/damper/ARB/bump stops, linearised at x0.
             const Real c = xd0 > 0 ? sd.bumpDamping : sd.reboundDamping;
@@ -473,16 +536,25 @@ void Vehicle::computeStep(Real dt, const DriverInput& input, const GroundQuery& 
             const Vec3 wc1 = hp - up * (sd.travel - x1);
             Vec3 ft{};
             for (int k = 0; k < n; ++k) {
-                const Real pen = samples[k].hit ? (sd.travel - x1) + r - samples[k].d : -1.0;
+                Real pen = -1.0;
+                Vec3 dir = samples[k].normal;
+                if (samples[k].hit && samples[k].probe) {
+                    const Vec3 d = wc1 - samples[k].point;
+                    const Real dist = length(d);
+                    pen = r - dist;
+                    dir = dist > 1e-9 ? d / dist : up;
+                } else if (samples[k].hit) {
+                    pen = (sd.travel - x1) + r - samples[k].d;
+                }
                 Real fk = 0;
                 if (pen > 0 && Bt > 0) fk = std::max(0.0, weight * (kt * pen + ct * (pen - ws.prevPen[k]) / dt));
                 ws.prevPen[k] = pen > 0 ? pen : 0.0;
                 dbg.point[k] = samples[k].hit ? samples[k].point : wc1 - up * r;
                 dbg.penetration[k] = pen;
                 if (fk <= 0) continue;
-                ft += samples[k].normal * fk;
+                ft += dir * fk;
                 patch += samples[k].point * fk;
-                nrm += samples[k].normal * fk;
+                nrm += dir * fk;
                 patchW += fk;
             }
             ws.contact = patchW > 0;
@@ -496,7 +568,7 @@ void Vehicle::computeStep(Real dt, const DriverInput& input, const GroundQuery& 
         } else {
             // Massless wheel: compression follows the highest sample (rigid tire).
             Real best = -1e9;
-            for (int k = 0; k < n; ++k)
+            for (int k = 0; k < patchCount; ++k)
                 if (samples[k].hit) best = std::max(best, sd.travel + r - samples[k].d);
             ws.contact = best >= 0;
             const Real x = ws.contact ? best : 0.0;

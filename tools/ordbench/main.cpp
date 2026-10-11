@@ -111,16 +111,16 @@ void printContact(const Car& car) {
               << "| Wheel hop | " << fr.wheelHopHz << " | " << fr.wheelHopExpectedHz << " |\n";
 
     std::cout << "\n### Rough roads: rate x contact samples (" << car.def.name << ", SIMULATION)\n\n";
-    std::cout << "RMS body vertical acceleration (g) over the feature, and engine ground rays per simulated second.\n\n";
-    std::cout << "| Configuration | Curb 8 cm @60 | Pothole 6 cm @60 | Cobbles (geometry) @40 | Cobbles (texture) @40 | Rays/s (curb) | Rays/s (texture cobbles) |\n|---|---|---|---|---|---|---|\n";
+    std::cout << "Rate-fair metrics: peak CoM heave (m) and body vertical acceleration averaged over 60 Hz windows (g, what a\n"
+                 "60 fps camera/player perceives). Cobblestones (texture): RMS per-step body acceleration (g). Rays: engine ground\n"
+                 "queries per simulated second (direct = every contact sample and envelope probe, every step).\n\n";
+    std::cout << "| Configuration | Curb 8 cm @120 heave | Curb @120 a60 | Curb 8 cm @60 a60 | Pothole 6 cm @60 a60 | Cobbles (texture) @40 | Rays/s (curb) | Rays/s (texture cobbles) |\n|---|---|---|---|---|---|---|---|\n";
     struct Cfg { const char* name; Real hz, hostHz; int samples; bool prefetch; };
     const Cfg cfgs[] = {
-        {"direct 1000 Hz, 5 samples (reference)", 1000, 0, 5, false},
-        {"direct 120 Hz, 1 sample", 120, 0, 1, false},
-        {"direct 240 Hz, 1 sample", 240, 0, 1, false},
-        {"direct 120 Hz, 5 samples", 120, 0, 5, false},
+        {"cached 2000 Hz, 5 samples (reference)", 2000, 0, 5, true},
+        {"direct 240 Hz, 1 sample (no patch)", 240, 0, 1, false},
         {"direct 240 Hz, 5 samples", 240, 0, 5, false},
-        {"direct 360 Hz, 8 samples", 360, 0, 8, false},
+        {"cached 240 Hz, 5 samples", 240, 0, 5, true},
         {"host 60 Hz x4 substeps, 5 samples, ground cache", 240, 60, 5, true},
         {"host 60 Hz x6 substeps, 8 samples, ground cache", 360, 60, 8, true},
     };
@@ -132,16 +132,16 @@ void printContact(const Car& car) {
         r.prefetch = c.prefetch;
         RunStats sc, st;
         r.stats = &sc;
-        const RoughRoadResult curb = curbStrike(r, 60);
+        const RoughRoadResult curb120 = curbStrike(r, 120);
         r.stats = nullptr;
+        const RoughRoadResult curb60 = curbStrike(r, 60);
         const RoughRoadResult hole = pothole(r, 60);
-        const RoughRoadResult geo = cobblestones(r, 40, false);
         r.stats = &st;
         const RoughRoadResult tex = cobblestones(r, 40, true);
-        std::cout << std::setprecision(3) << "| " << c.name << " | " << curb.rmsVerticalAccelG << " | "
-                  << hole.rmsVerticalAccelG << " | " << geo.rmsVerticalAccelG << " | " << tex.rmsVerticalAccelG << " | "
-                  << std::setprecision(0) << static_cast<Real>(sc.engineRays) / sc.simulatedSeconds << " | "
-                  << static_cast<Real>(st.engineRays) / st.simulatedSeconds << " |\n";
+        std::cout << std::setprecision(4) << "| " << c.name << " | " << curb120.maxHeave << " | " << std::setprecision(3)
+                  << curb120.rmsFrameAccelG << " | " << curb60.rmsFrameAccelG << " | " << hole.rmsFrameAccelG << " | "
+                  << tex.rmsVerticalAccelG << " | " << std::setprecision(0) << static_cast<Real>(sc.engineRays) / sc.simulatedSeconds
+                  << " | " << static_cast<Real>(st.engineRays) / st.simulatedSeconds << " |\n";
     }
 }
 

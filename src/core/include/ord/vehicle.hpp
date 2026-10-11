@@ -32,7 +32,9 @@
 
 namespace ord {
 
-inline constexpr int kMaxContactSamples = 9;
+inline constexpr int kMaxPatchSamples = 9;
+inline constexpr int kMaxEnvelopeProbes = 3;  // per side (ahead / behind the patch)
+inline constexpr int kMaxContactSamples = kMaxPatchSamples + 2 * kMaxEnvelopeProbes;
 
 struct RigidBodyState {
     Vec3 position;           // world position of the body origin
@@ -46,9 +48,14 @@ struct VehicleFidelity {
     bool unsprungMass = true;   // per-corner wheel DOF with tire vertical stiffness (needs WheelDef::unsprungMass > 0)
     int contactSamples = 5;     // 1 (centre), 5 (centre + 4 edges), 8 (perimeter), 9 (3x3)
     bool telemetry = true;      // fill the full TelemetryFrame every step
+    // Envelope probes per side: radial samples ahead of / behind the patch
+    // against the tire's circular profile. They carry no load on flat ground
+    // and pick up steps (curbs, pothole edges) before the patch reaches them,
+    // like a real tire's geometric enveloping. Unsprung mode with > 1 patch sample only.
+    int envelopeProbes = 3;
 
-    static VehicleFidelity lod0() { return {true, 5, true}; }
-    static VehicleFidelity lod1() { return {false, 1, false}; }
+    static VehicleFidelity lod0() { return {true, 5, true, 3}; }
+    static VehicleFidelity lod1() { return {false, 1, false, 0}; }
 };
 
 enum class ChassisMode {
@@ -103,6 +110,17 @@ public:
     // for the same dt, integrate, then call setChassisState() before next step().
     const ChassisForces& chassisForces() const { return forces_; }
     void setChassisState(const RigidBodyState& s);
+
+    // Host-coupling diagnostics: difference between the chassis state the host
+    // integrated and the one predicted by stepSubstepped() for the same step.
+    struct HostSyncStats {
+        Real positionError = 0, angleError = 0;        // last sync (m, rad)
+        Real maxPositionError = 0, maxAngleError = 0;  // since construction
+        std::uint64_t syncs = 0;
+    };
+    const HostSyncStats& hostSync() const { return hostSync_; }
+    // Pose differences larger than this are treated as teleports, not carried by the wheels.
+    static constexpr Real kMaxCarriedPoseError = 0.05;  // m
 
     // ---- Ground prefetch (see GroundPrefetchCache) ----
     // Appends one request per wheel; `out` is reused by the caller.
@@ -173,6 +191,7 @@ private:
         Real d = 0;            // distance from the sample plane (through the hardpoint) along -up
         Vec3 point, normal;
         Real s = 0;            // longitudinal offset in the patch
+        bool probe = false;    // envelope probe (radial penetration against the tire circle)
     };
 
     void computeStep(Real dt, const DriverInput& input, const GroundQuery& ground);
@@ -181,7 +200,7 @@ private:
     VehicleSensors buildSensors(Real dt) const;
     Real wheelSteerAngle(std::size_t w, Real refAngle) const;
     int sampleContact(std::size_t w, const Vec3& hp, const Vec3& up, const Vec3& heading, const GroundQuery& ground,
-                      std::array<Sample, kMaxContactSamples>& out);
+                      std::array<Sample, kMaxContactSamples>& out, int& patchCount);
     void staticWheelLoads(std::array<Real, kMaxWheels>& load) const;
     bool usesUnsprung(std::size_t w) const { return fidelity_.unsprungMass && def_.wheels[w].unsprungMass > 0; }
     void fillTelemetry(const DriverInput& input, const ActuatorCommands& cmd,
@@ -208,6 +227,9 @@ private:
     ChassisMode chassisMode_ = ChassisMode::Internal;
     bool hostGravity_ = false;
     ChassisForces forces_;
+    RigidBodyState predicted_;
+    bool havePrediction_ = false;
+    HostSyncStats hostSync_;
     Vec3 accel_, angAccel_;          // last chassis accelerations (for the unsprung DOF)
     Vec3 prevVelocity_, prevAngularVelocity_;
     std::uint64_t groundQueries_ = 0;

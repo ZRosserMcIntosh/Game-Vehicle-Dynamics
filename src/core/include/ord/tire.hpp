@@ -60,6 +60,14 @@ struct TireParams {
     Real trailCollapseAngle = 0.20;   // rad, trail reaches zero at this slip angle
 
     Real wheelInertia = 1.2;          // kg*m^2, wheel + tire + hub + brake rotor
+
+    // Vertical (radial) tire properties, used when the wheel has its own
+    // unsprung-mass degree of freedom (VehicleFidelity::unsprungMass).
+    Real verticalStiffness = 250000.0;  // N/m for the whole contact patch
+    Real verticalDamping = 400.0;       // N*s/m
+    // Contact-patch footprint half extents used for multi-point contact sampling.
+    Real patchHalfLength = 0.09;        // m, along the wheel heading
+    Real patchHalfWidth = 0.10;         // m, across
 };
 
 // Per-contact surface multipliers; supplied by the host's surface query.
@@ -69,7 +77,23 @@ struct SurfaceProperties {
     // Crude wet-road speed falloff: mu *= 1 / (1 + wetSpeedFalloff * v). 0 = dry.
     // Placeholder for a proper water-film / hydroplaning model (roadmap M3).
     Real wetSpeedFalloff = 0.0;
+    // Geometric roughness hint for the ground cache: 0 = smooth road, where a
+    // coarse plane is exact enough; > 0 = cobblestones, curbs, potholes,
+    // gravel, where ground must be sampled densely. Does not change grip.
+    Real roughness = 0.0;
+    // Procedural micro-profile for surfaces whose collision mesh is flat but
+    // whose real surface is not (paving stones, worn concrete, rumble strips
+    // built as flat geometry): stones of `textureWavelength` pitch and up to
+    // `textureAmplitude` height, added to the sampled ground height under each
+    // contact sample. Deterministic in world position (multiplayer-safe), costs
+    // no engine queries. Real geometry (curbs, potholes, bumps) should stay geometry.
+    Real textureAmplitude = 0.0;     // m (0 = off)
+    Real textureWavelength = 0.15;   // m
+    Real textureVariation = 0.4;     // 0 = identical stones, 1 = heights vary 0..A per stone
 };
+
+// Height of the procedural micro-profile at a world point (0 when disabled).
+Real surfaceTextureHeight(const SurfaceProperties& s, Real x, Real y);
 
 struct TireSlipState {
     // Transient ("deflection-based") slip quantities, integrated with the

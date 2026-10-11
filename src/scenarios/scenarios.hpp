@@ -12,18 +12,40 @@
 #include <vector>
 
 #include "ord/assists.hpp"
+#include "ord/ground_cache.hpp"
 #include "ord/tire.hpp"
 #include "ord/vehicle.hpp"
 #include "ord/vehicle_def.hpp"
 
 namespace ord::scenarios {
 
+// Ground-query accounting for one scenario run.
+struct RunStats {
+    std::uint64_t engineRays = 0;      // queries that reached the world (TestTrackGround)
+    std::uint64_t vehicleQueries = 0;  // queries issued by the vehicle (direct or to the cache)
+    std::uint64_t cacheMisses = 0;
+    std::uint64_t roughStrips = 0;     // strips sampled densely
+    std::uint64_t frames = 0;          // render frames emulated (prefetch mode)
+    Real simulatedSeconds = 0;
+};
+
 struct RunConfig {
     VehicleDefinition vehicle;
     AssistConfig assists;
+    VehicleFidelity fidelity = VehicleFidelity::lod0();
     Real hz = 360.0;
     SurfaceProperties surface;   // whole test area
     std::ostream* csv = nullptr; // optional per-step telemetry log
+    // Ground prefetch emulation: rebuild a GroundPrefetchCache once per render
+    // frame at `frameHz` and let the vehicle query only the cache.
+    bool prefetch = false;
+    Real frameHz = 60.0;
+    GroundPrefetchCache::Settings prefetchSettings;
+    RunStats* stats = nullptr;   // optional output
+    // Host-engine emulation: when > 0 the vehicle runs in ChassisMode::External
+    // and a separate host integrator (different scheme, like an engine's)
+    // steps at hostHz; the vehicle substeps hz / hostHz times per host step.
+    Real hostHz = 0;
 };
 
 struct AccelResult {
@@ -86,7 +108,10 @@ HoldResult slopeHold(const RunConfig& cfg, Real gradePercent, Real seconds, bool
 struct BumpResult {
     Real peakCompression = 0; // m
     Real peakVerticalAccelG = 0;
-    Real airborneTime = 0;    // s with any wheel off the ground
+    Real airborneTime = 0;    // s with any wheel off the ground (wheel hop)
+    Real allAirborneTime = 0; // s with every wheel off the ground (car jumps)
+    Real minWheelLoad = 0;    // N, lowest tire load seen after the bump starts
+    Real maxWheelLoad = 0;    // N
     bool finite = true;
 };
 BumpResult speedBump(const RunConfig& cfg, Real speedKmh, Real bumpHeight = 0.08, Real bumpLength = 0.5);
@@ -108,5 +133,32 @@ struct PerfResult {
     Real microsecondsPerStep = 0;
 };
 PerfResult measureStepCost(const RunConfig& cfg, int steps = 20000);
+
+// ---- Contact & suspension fidelity (B19, B20, B22) ----
+
+struct RoughRoadResult {
+    bool finite = true;
+    Real peakLoad = 0;          // N, max tire load on the affected wheels
+    Real staticLoad = 0;        // N, affected wheels' load before the feature
+    Real minLoad = 0;           // N
+    Real peakFx = 0;            // N, max |longitudinal force| (impact)
+    Real rmsVerticalAccelG = 0; // body, over the feature
+    Real loadVariation = 0;     // std/mean of the affected tire loads over the feature
+    Real wheelAirborneTime = 0; // s, affected wheels off the ground
+};
+// B19: 8 cm curb (raised strip, 0.5 m wide, 2 cm edge ramps) under the left wheels.
+RoughRoadResult curbStrike(const RunConfig& cfg, Real speedKmh, Real height = 0.08);
+// B20a: rectangular pothole under the left wheels (2 cm edge ramps).
+RoughRoadResult pothole(const RunConfig& cfg, Real speedKmh, Real depth = 0.06, Real length = 0.6);
+// B20b: 25 m of cobblestones (paralelepipedo): 2 cm stones on a 0.15 m pitch, rough surface.
+// textured = true: flat collision + procedural micro-profile with the same stone shape.
+RoughRoadResult cobblestones(const RunConfig& cfg, Real speedKmh, bool textured = false);
+
+struct FrequencyResult {
+    Real heaveHz = 0, heaveExpectedHz = 0;
+    Real wheelHopHz = 0, wheelHopExpectedHz = 0;
+};
+// B22: symmetric undamped car, small heave impulse; measured vs analytic quarter-car modes.
+FrequencyResult suspensionFrequencies(const RunConfig& cfg);
 
 }  // namespace ord::scenarios

@@ -30,6 +30,11 @@ std::string VehicleDefinition::validate() const {
         if (w.suspension.bumpDamping < 0 || w.suspension.reboundDamping < 0) return id + "damping must be >= 0";
         if (w.maxBrakeTorque < 0 || w.handbrakeTorque < 0) return id + "brake torque must be >= 0";
         if (!isFinite(w.suspension.hardpoint)) return id + "hardpoint must be finite";
+        if (!(w.unsprungMass >= 0) || !std::isfinite(w.unsprungMass)) return id + "unsprungMass must be >= 0";
+        if (!finitePositive(w.tire.verticalStiffness)) return id + "tire verticalStiffness must be > 0";
+        if (w.tire.verticalDamping < 0) return id + "tire verticalDamping must be >= 0";
+        if (w.tire.patchHalfLength < 0 || w.tire.patchHalfWidth < 0 || w.tire.patchHalfLength >= w.tire.radius)
+            return id + "patch half extents must be >= 0 and smaller than the radius";
     }
     for (std::size_t a = 0; a < axles.size(); ++a) {
         const AxleDef& ax = axles[a];
@@ -50,7 +55,14 @@ std::string VehicleDefinition::validate() const {
         share += da.torqueShare;
     }
     if (std::abs(share - 1.0) > 1e-6) return "driven axle torque shares must sum to 1";
+    if (totalUnsprungMass() >= 0.5 * mass) return "unsprung masses must be well below half the total mass";
     return {};
+}
+
+Real VehicleDefinition::totalUnsprungMass() const {
+    Real m = 0;
+    for (const WheelDef& w : wheels) m += w.unsprungMass;
+    return m;
 }
 
 Real VehicleDefinition::wheelbase() const {

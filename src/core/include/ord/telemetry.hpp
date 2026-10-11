@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <ostream>
 
 #include "ord/assists.hpp"
@@ -18,6 +19,7 @@ namespace ord {
 struct WheelTelemetry {
     bool contact = false;
     Real compression = 0;    // m, 0 = full droop
+    Real compressionRate = 0;  // m/s
     Real load = 0;           // N, Fz
     Real omega = 0;          // rad/s
     Real slipRatio = 0;      // transient kappa
@@ -46,6 +48,7 @@ struct TelemetryFrame {
     Real clutchEngagement = 0;
     DrivetrainTelemetry drivetrain;
     AssistReport assists;
+    std::uint64_t groundQueries = 0;  // cumulative GroundQuery calls by this vehicle
     std::size_t wheelCount = 0;
     std::array<WheelTelemetry, kMaxWheels> wheels{};
 };

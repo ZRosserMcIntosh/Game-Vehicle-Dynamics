@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "ord/tire.hpp"
 
+#include <cstdint>
+
 namespace ord {
 
 namespace {
@@ -75,6 +77,23 @@ TireForces MagicFormulaTire::evaluate(Real fz, Real kappa, Real tanAlpha, const 
     out.muX = std::max(0.0, p_.muX * (1 + p_.muXLoadSensitivity * dfz)) * muScale;
     out.muY = std::max(0.0, p_.muY * (1 + p_.muYLoadSensitivity * dfz)) * muScale;
     return out;
+}
+
+Real surfaceTextureHeight(const SurfaceProperties& s, Real x, Real y) {
+    if (s.textureAmplitude <= 0 || s.textureWavelength <= 1e-3) return 0;
+    const Real l = s.textureWavelength;
+    const Real ci = std::floor(x / l), cj = std::floor(y / l);
+    // Integer hash of the stone cell -> [0, 1).
+    auto mix = [](std::uint64_t h) {
+        h ^= h >> 33; h *= 0xff51afd7ed558ccdULL; h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL; h ^= h >> 33;
+        return h;
+    };
+    const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::int64_t>(ci)) * 0x9E3779B97F4A7C15ULL) ^
+                              static_cast<std::uint64_t>(static_cast<std::int64_t>(cj));
+    const Real rnd = static_cast<Real>(mix(key) >> 11) * (1.0 / 9007199254740992.0);
+    const Real scale = 1.0 - clamp(s.textureVariation, 0.0, 1.0) * rnd;
+    const Real sx = std::sin(kPi * x / l), sy = std::sin(kPi * y / l);
+    return s.textureAmplitude * scale * sx * sx * sy * sy;
 }
 
 void MagicFormulaTire::integrateLateralSlip(TireSlipState& s, Real vx, Real vy, Real dt) const {

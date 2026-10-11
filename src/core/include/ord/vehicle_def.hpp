@@ -35,6 +35,7 @@ struct WheelDef {
     Real staticToe = 0.0;          // rad, + = toe-in on the left wheel convention handled per side
     Real maxBrakeTorque = 2000.0;  // N*m at 100% pedal
     Real handbrakeTorque = 0.0;    // N*m at 100% handbrake
+    Real unsprungMass = 40.0;      // kg: wheel, tire, hub, brake, half the links. Part of VehicleDefinition::mass.
     bool isLeft = true;
 };
 
@@ -52,7 +53,7 @@ struct AeroDef {
 
 struct VehicleDefinition {
     std::string name = "unnamed";
-    Real mass = 1400.0;            // kg, total including unsprung mass (v0.1)
+    Real mass = 1400.0;            // kg, total including unsprung masses
     Vec3 centerOfMass{0, 0, 0.0};  // body frame
     Vec3 inertia{500, 2200, 2400}; // kg*m^2 principal moments about the CoM (roll, pitch, yaw)
     std::vector<WheelDef> wheels;  // ordered; axles reference them
@@ -65,6 +66,7 @@ struct VehicleDefinition {
     std::string validate() const;
 
     Real wheelbase() const;
+    Real totalUnsprungMass() const;
 };
 
 }  // namespace ord

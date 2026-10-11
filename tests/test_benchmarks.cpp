@@ -107,5 +107,6 @@ TEST_CASE("bench: speed bump traversal stays finite and grounded at 40 km/h") {
     const BumpResult r = speedBump(sim(vehicles::referenceSportsRwd()), 40);
     CHECK(r.finite);
     CHECK(r.peakCompression > 0.05);
-    CHECK(r.airborneTime < 0.1);
+    CHECK(r.allAirborneTime == 0);   // the car never leaves the ground
+    CHECK(r.airborneTime < 0.25);    // brief wheel hop allowed (real unsprung mass)
 }

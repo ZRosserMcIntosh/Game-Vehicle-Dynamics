@@ -27,10 +27,12 @@ add_library(ord_core
   src/core/src/tire.cpp
   src/core/src/drivetrain.cpp
   src/core/src/ground.cpp
+  src/core/src/ground_cache.cpp
   src/core/src/assists.cpp
   src/core/src/vehicle_def.cpp
   src/core/src/vehicle.cpp
   src/core/src/telemetry.cpp
+  src/core/src/debug_draw.cpp
 )
 add_library(ord::core ALIAS ord_core)
 target_include_directories(ord_core PUBLIC src/core/include)

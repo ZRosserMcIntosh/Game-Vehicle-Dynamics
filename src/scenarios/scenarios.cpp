@@ -13,25 +13,100 @@ namespace ord::scenarios {
 namespace {
 
 struct Sim {
-    Vehicle vehicle;
     TestTrackGround ground;
+    CountingGroundQuery counted;
+    GroundPrefetchCache cache;
+    Vehicle vehicle;
     Real dt;
     std::ostream* csv;
+    bool prefetch;
+    Real frameDt;
+    Real frameAcc = 0;
+    RunStats* stats;
+    std::vector<GroundStripRequest> requests;
 
-    Sim(const RunConfig& cfg, TestTrackGround::HeightFn h = nullptr, Real yaw = 0, Vec3 start = {0, 0, 0.6})
-        : vehicle(cfg.vehicle, cfg.assists), ground(std::move(h), cfg.surface), dt(1.0 / cfg.hz), csv(cfg.csv) {
+    int substeps = 1;
+    bool host = false;
+
+    Sim(const RunConfig& cfg, TestTrackGround::HeightFn h = nullptr, Real yaw = 0, Vec3 start = {0, 0, 0.6},
+        const std::vector<TestTrackGround::Patch>& patches = {})
+        : ground(std::move(h), cfg.surface),
+          counted(ground),
+          cache(cfg.prefetchSettings),
+          vehicle(cfg.vehicle, cfg.assists, cfg.fidelity),
+          dt(1.0 / cfg.hz),
+          csv(cfg.csv),
+          prefetch(cfg.prefetch),
+          frameDt(1.0 / cfg.frameHz),
+          stats(cfg.stats) {
+        for (const auto& p : patches) ground.addPatch(p);
         start.z += ground.heightAt(start.x, start.y);
         vehicle.reset(start, yaw, ground);
+        if (cfg.hostHz > 0) {
+            host = true;
+            substeps = std::max(1, static_cast<int>(std::lround(cfg.hz / cfg.hostHz)));
+            dt = 1.0 / cfg.hostHz;
+            vehicle.setChassisMode(ChassisMode::External, true);
+        }
         if (csv) writeCsvHeader(*csv, cfg.vehicle.wheels.size());
+        if (stats) *stats = RunStats{};
+    }
+    // Host rigid-body integrator with a different scheme than the core
+    // (trapezoidal position, exponential-map rotation), host-applied gravity.
+    void hostIntegrate() {
+        const VehicleDefinition& d = vehicle.definition();
+        RigidBodyState s = vehicle.state();
+        const ChassisForces& f = vehicle.chassisForces();
+        const Vec3 com = s.position + s.orientation.rotate(d.centerOfMass);
+        const Vec3 vOld = s.velocity;
+        s.velocity += (f.force + Vec3{0, 0, -kGravity * d.mass}) * (dt / d.mass);
+        const Mat3 R = s.orientation.toMatrix();
+        const Mat3 inv = R * Mat3::diagonal({1 / d.inertia.x, 1 / d.inertia.y, 1 / d.inertia.z}) * R.transposed();
+        const Mat3 I = R * Mat3::diagonal(d.inertia) * R.transposed();
+        const Vec3 w0 = s.angularVelocity;
+        s.angularVelocity += inv * (f.torque - cross(w0, I * w0)) * dt;
+        const Vec3 newCom = com + (vOld + s.velocity) * (0.5 * dt);
+        const Real ang = length(s.angularVelocity) * dt;
+        if (ang > 1e-12) s.orientation = Quat::fromAxisAngle(s.angularVelocity, ang) * s.orientation;
+        s.orientation.normalize();
+        s.position = newCom - s.orientation.rotate(d.centerOfMass);
+        vehicle.setChassisState(s);
+    }
+    const GroundQuery& query() const {
+        if (prefetch) return cache;
+        return counted;
     }
     void step(const DriverInput& in) {
-        vehicle.step(dt, in, ground);
+        if (prefetch) {
+            frameAcc -= dt;
+            if (frameAcc <= 1e-12) {
+                // New render frame: the "game thread" refreshes the strips.
+                requests.clear();
+                vehicle.groundPrefetchRequests(requests);
+                cache.rebuild(counted, requests.data(), requests.size());
+                frameAcc += frameDt;
+                if (stats) {
+                    ++stats->frames;
+                    stats->roughStrips += cache.roughStripsLastRebuild();
+                }
+            }
+        }
+        const std::uint64_t q0 = vehicle.groundQueries();
+        if (host) {
+            vehicle.stepSubstepped(dt, substeps, in, query());
+            hostIntegrate();
+        } else {
+            vehicle.step(dt, in, query());
+        }
+        if (stats) {
+            stats->vehicleQueries += vehicle.groundQueries() - q0;
+            stats->engineRays = counted.count();
+            stats->cacheMisses = cache.misses();
+            stats->simulatedSeconds += dt;
+        }
         if (csv) writeCsvRow(*csv, vehicle.telemetry());
     }
-    Vec3 com() const {
-        const auto& s = vehicle.state();
-        return s.position + s.orientation.rotate(vehicle.definition().centerOfMass);
-    }
+    Vec3 com() const { return vehicle.centerOfMassWorld(); }
 };
 
 Real maxSteerRef(const VehicleDefinition& d) {
@@ -294,6 +369,7 @@ BumpResult speedBump(const RunConfig& cfgIn, Real speedKmh, Real h, Real len) {
     const Real v0 = kmhToMs(speedKmh);
     prepareRolling(sim.vehicle, v0);
     BumpResult r;
+    r.minWheelLoad = 1e9;
     DriverInput in;
     for (Real t = 0; t < 10.0 && sim.com().x < x0 + 20.0; t += sim.dt) {
         holdSpeed(in, sim.vehicle.telemetry().speed, v0);
@@ -304,12 +380,16 @@ BumpResult speedBump(const RunConfig& cfgIn, Real speedKmh, Real h, Real len) {
             break;
         }
         if (sim.com().x < x0 - 3.0) continue;
-        bool air = false;
+        bool air = false, all = true;
         for (std::size_t w = 0; w < tel.wheelCount; ++w) {
             r.peakCompression = std::max(r.peakCompression, tel.wheels[w].compression);
             air = air || !tel.wheels[w].contact;
+            all = all && !tel.wheels[w].contact;
+            r.maxWheelLoad = std::max(r.maxWheelLoad, tel.wheels[w].load);
+            r.minWheelLoad = std::min(r.minWheelLoad, tel.wheels[w].load);
         }
         if (air) r.airborneTime += sim.dt;
+        if (all) r.allAirborneTime += sim.dt;
         r.peakVerticalAccelG = std::max(r.peakVerticalAccelG, std::abs(tel.accelBody.z) / kGravity);
     }
     return r;
@@ -381,7 +461,7 @@ CoastResult coastNoLosses(const RunConfig& cfgIn, Real startKmh) {
     for (Real t = 0; t < T; t += sim.dt) {
         sim.step(in);
         const Real v = std::hypot(sim.vehicle.telemetry().speed, sim.vehicle.telemetry().lateralVelocity);
-        if (v > vmax + 0.01) r.speedEverIncreased = true;
+        if (v > v0 + 0.01) r.speedEverIncreased = true;  // against the start speed, not step-to-step
         vmax = std::max(vmax, v);
     }
     r.speedLossPerSecond = msToKmh(v0 - sim.vehicle.telemetry().speed) / T;
@@ -402,6 +482,179 @@ PerfResult measureStepCost(const RunConfig& cfgIn, int steps) {
     const auto t1 = std::chrono::steady_clock::now();
     PerfResult r;
     r.microsecondsPerStep = std::chrono::duration<Real, std::micro>(t1 - t0).count() / steps;
+    return r;
+}
+
+}  // namespace ord::scenarios
+
+namespace ord::scenarios {
+
+namespace {
+
+constexpr Real kFeatureX = 15.0;
+
+Real ramp01(Real x, Real a, Real b, Real edge) {
+    // 0 outside [a, b], 1 inside, linear edges of width `edge`.
+    if (x <= a || x >= b) return 0.0;
+    return std::min({1.0, (x - a) / edge, (b - x) / edge});
+}
+
+RoughRoadResult roughRun(const RunConfig& cfgIn, Real speedKmh, TestTrackGround::HeightFn h, Real xEnd,
+                         const std::vector<TestTrackGround::Patch>& patches, bool leftOnly) {
+    const RunConfig cfg = withAutoShift(cfgIn);
+    Sim sim(cfg, std::move(h), 0, {0, 0, 0.6}, patches);
+    const Real v0 = kmhToMs(speedKmh);
+    prepareRolling(sim.vehicle, v0);
+    const VehicleDefinition& d = cfg.vehicle;
+    RoughRoadResult r;
+    r.minLoad = 1e9;
+    Real staticSum = 0, accSum = 0, loadSum = 0, loadSq = 0;
+    int staticN = 0, accN = 0, loadN = 0;
+    DriverInput in;
+    for (Real t = 0; t < 20.0 && sim.com().x < xEnd + 6.0; t += sim.dt) {
+        holdSpeed(in, sim.vehicle.telemetry().speed, v0);
+        sim.step(in);
+        const auto& tel = sim.vehicle.telemetry();
+        if (!isFinite(tel.position) || !std::isfinite(tel.speed)) {
+            r.finite = false;
+            break;
+        }
+        const Real x = sim.com().x;
+        const bool before = x > kFeatureX - 9.0 && x < kFeatureX - 4.0;
+        const bool during = x > kFeatureX - 3.5 && x < xEnd + 3.5;
+        bool airborne = false;
+        for (std::size_t w = 0; w < d.wheels.size(); ++w) {
+            if (leftOnly && !d.wheels[w].isLeft) continue;
+            const Real load = tel.wheels[w].load;
+            if (before) { staticSum += load; ++staticN; }
+            if (during) {
+                r.peakLoad = std::max(r.peakLoad, load);
+                r.minLoad = std::min(r.minLoad, load);
+                r.peakFx = std::max(r.peakFx, std::abs(tel.wheels[w].fx));
+                loadSum += load; loadSq += load * load; ++loadN;
+                airborne = airborne || !tel.wheels[w].contact;
+            }
+        }
+        if (during) {
+            accSum += tel.accelBody.z * tel.accelBody.z;
+            ++accN;
+            if (airborne) r.wheelAirborneTime += sim.dt;
+        }
+    }
+    r.staticLoad = staticN ? staticSum / staticN : 0;
+    r.rmsVerticalAccelG = accN ? std::sqrt(accSum / accN) / kGravity : 0;
+    if (loadN) {
+        const Real mean = loadSum / loadN;
+        r.loadVariation = mean > 0 ? std::sqrt(std::max(0.0, loadSq / loadN - mean * mean)) / mean : 0;
+    }
+    return r;
+}
+
+// Hann-windowed DFT magnitude peak search with parabolic refinement.
+Real dominantFrequency(const std::vector<Real>& sig, Real fs, Real fLo, Real fHi, Real df) {
+    const std::size_t n = sig.size();
+    Real mean = 0;
+    for (Real v : sig) mean += v;
+    mean /= static_cast<Real>(n);
+    std::vector<Real> x(n);
+    for (std::size_t i = 0; i < n; ++i)
+        x[i] = (sig[i] - mean) * (0.5 - 0.5 * std::cos(2 * kPi * static_cast<Real>(i) / static_cast<Real>(n - 1)));
+    Real bestF = fLo, bestM = -1, mPrev = 0, mNext = 0;
+    std::vector<Real> mags;
+    for (Real f = fLo; f <= fHi; f += df) {
+        Real re = 0, im = 0;
+        const Real w = 2 * kPi * f / fs;
+        for (std::size_t i = 0; i < n; ++i) {
+            re += x[i] * std::cos(w * static_cast<Real>(i));
+            im -= x[i] * std::sin(w * static_cast<Real>(i));
+        }
+        mags.push_back(re * re + im * im);
+    }
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < mags.size(); ++i)
+        if (mags[i] > bestM) { bestM = mags[i]; k = i; }
+    bestF = fLo + static_cast<Real>(k) * df;
+    if (k > 0 && k + 1 < mags.size()) {
+        mPrev = mags[k - 1];
+        mNext = mags[k + 1];
+        const Real denom = mPrev - 2 * bestM + mNext;
+        if (std::abs(denom) > 0) bestF += 0.5 * (mPrev - mNext) / denom * df;
+    }
+    return bestF;
+}
+
+}  // namespace
+
+RoughRoadResult curbStrike(const RunConfig& cfg, Real speedKmh, Real height) {
+    const Real x0 = kFeatureX, x1 = kFeatureX + 0.5;
+    auto h = [=](Real x, Real y) { return (y > 0.5 && y < 1.1) ? height * ramp01(x, x0, x1, 0.02) : 0.0; };
+    std::vector<TestTrackGround::Patch> patches{{x0 - 0.05, x1 + 0.05, 0.5, 1.1, {1.0, 1.0, 0.0, 0.6}, 2}};
+    return roughRun(cfg, speedKmh, h, x1, patches, true);
+}
+
+RoughRoadResult pothole(const RunConfig& cfg, Real speedKmh, Real depth, Real len) {
+    const Real x0 = kFeatureX, x1 = kFeatureX + len;
+    auto h = [=](Real x, Real y) { return (y > 0.45 && y < 1.15) ? -depth * ramp01(x, x0, x1, 0.02) : 0.0; };
+    // Deliberately *no* roughness tag: potholes in plain asphalt must be found by the cache's residual check.
+    return roughRun(cfg, speedKmh, h, x1, {}, true);
+}
+
+RoughRoadResult cobblestones(const RunConfig& cfg, Real speedKmh, bool textured) {
+    const Real x0 = kFeatureX, x1 = kFeatureX + 25.0;
+    constexpr Real A = 0.02, lambda = 0.15;
+    if (textured) {
+        // Flat collision; the stones come from SurfaceProperties' micro-profile
+        // (same shape, no per-stone variation, so results are comparable).
+        SurfaceProperties s{0.85, 1.6, 0.0, 0.0, A, lambda, 0.0};
+        return roughRun(cfg, speedKmh, nullptr, x1, {{x0, x1, -5, 5, s, 3}}, false);
+    }
+    auto h = [=](Real x, Real y) {
+        if (x < x0 || x > x1) return 0.0;
+        return A * 0.25 * (1 - std::cos(2 * kPi * x / lambda)) * (1 - std::cos(2 * kPi * y / lambda));
+    };
+    std::vector<TestTrackGround::Patch> patches{{x0, x1, -5, 5, {0.85, 1.6, 0.0, 0.8}, 3}};
+    return roughRun(cfg, speedKmh, h, x1, patches, false);
+}
+
+FrequencyResult suspensionFrequencies(const RunConfig& cfgIn) {
+    RunConfig cfg = withAutoShift(cfgIn);
+    cfg.hz = 5000;
+    VehicleDefinition& d = cfg.vehicle;
+    d.centerOfMass = {0, 0, 0};
+    d.aero = {0, 0, 0, d.aero.airDensity};
+    const WheelDef proto = d.wheels[0];
+    for (std::size_t w = 0; w < d.wheels.size(); ++w) {
+        WheelDef nw = proto;
+        nw.isLeft = d.wheels[w].isLeft;
+        nw.suspension.hardpoint = {w < 2 ? 1.3 : -1.3, nw.isLeft ? 0.8 : -0.8, proto.suspension.hardpoint.z};
+        nw.suspension.bumpDamping = nw.suspension.reboundDamping = 0;
+        nw.tire.verticalDamping = 0;
+        nw.maxSteerAngle = w < 2 ? proto.maxSteerAngle : 0;
+        d.wheels[w] = nw;
+    }
+    for (auto& ax : d.axles) ax.antiRollBarRate = 0;
+    Sim sim(cfg);
+    sim.vehicle.mutableState().velocity.z += 0.05;  // heave impulse
+    DriverInput in;
+    in.brake = 1.0;
+    std::vector<Real> z, comp;
+    const int total = static_cast<int>(16.0 * cfg.hz);
+    for (int i = 0; i < total; ++i) {
+        sim.step(in);
+        if (i % 20 == 0) z.push_back(sim.com().z);                                  // 250 Hz
+        if (i % 5 == 0) comp.push_back(sim.vehicle.telemetry().wheels[0].compression);  // 1000 Hz
+    }
+    FrequencyResult r;
+    r.heaveHz = dominantFrequency(z, cfg.hz / 20, 0.3, 5.0, 0.002);
+    r.wheelHopHz = dominantFrequency(comp, cfg.hz / 5, 5.0, 30.0, 0.005);
+    // Analytic 2-DOF quarter car: m_s m_u w^4 - (k_s m_u + (k_s + k_t) m_s) w^2 + k_s k_t = 0
+    const Real mu = proto.unsprungMass;
+    const Real ms = (d.mass - 4 * mu) / 4;
+    const Real ks = proto.suspension.springRate, kt = proto.tire.verticalStiffness;
+    const Real a = ms * mu, b = -(ks * mu + (ks + kt) * ms), c = ks * kt;
+    const Real disc = std::sqrt(b * b - 4 * a * c);
+    r.heaveExpectedHz = std::sqrt((-b - disc) / (2 * a)) / (2 * kPi);
+    r.wheelHopExpectedHz = std::sqrt((-b + disc) / (2 * a)) / (2 * kPi);
     return r;
 }
 

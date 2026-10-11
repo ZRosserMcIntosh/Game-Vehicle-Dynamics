@@ -5,6 +5,8 @@ set(ORD_TEST_SOURCES
   test_vehicle.cpp
   test_assists.cpp
   test_benchmarks.cpp
+  test_host.cpp
+  test_contact.cpp
 )
 add_executable(ord_tests ${ORD_TEST_SOURCES})
 target_link_libraries(ord_tests PRIVATE ord_scenarios)

@@ -26,14 +26,10 @@ TEST_CASE("vehicle: definition validation rejects bad data") {
     bad = d;
     bad.wheels[2].suspension.springRate = std::nan("");
     CHECK(!bad.validate().empty());
-    bool threw = false;
-    try {
-        bad.mass = 0;
-        Vehicle v(bad);
-    } catch (const std::invalid_argument&) {
-        threw = true;
-    }
-    CHECK(threw);
+    bad.mass = 0;
+    Vehicle v(bad);  // no exceptions: the vehicle is inert and reports why
+    CHECK(!v.isValid());
+    CHECK(!v.error().empty());
 }
 
 TEST_CASE("vehicle: static corner loads sum to weight and follow the CoM position") {

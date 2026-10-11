@@ -19,6 +19,16 @@ Prioritised by "what unlocks measurable driving quality soonest". Each item has 
 - [x] Tire parameter generator (licensing risk)
 - [~] UE5 plugin: source written (M1.1–M1.5), **not compiled yet**, see `plugin/OpenRoadDynamics/README.md`
 
+## v0.3 — Main-branch integration and engineering hardening (this session)
+
+- [x] Foundation merged into `main` (PR #11); CI on Linux GCC/Clang, sanitizers, macOS, Windows
+- [x] Numerical audit of the 60 Hz × substep host coupling (like-for-like comparison, sub-mm host pose error)
+- [x] Geometric envelope probes for sharp edges (curb convergence across rates) (PR #12)
+- [x] Robustness: range validation, static-support check, runtime fault guard, ABS-off hidden-aid fix, linear steering-mapping crossfade on preset switch, race-downforce and hypercar reference cars, fuzz/long-duration/determinism tests, golden baseline (PR #13)
+- [x] Zero steady-state allocation proven by test; honest headless-benchmark scope documented
+- [x] Versioning and release policy ([RELEASING.md](RELEASING.md))
+- [~] Plugin static audit and proving-ground preparation: **still not compiled against Unreal**
+
 ## M1 — Unreal Engine 5 adapter (next: compile and validate)
 
 1. **Plugin skeleton** `plugin/OpenRoadDynamics` (Runtime + Editor modules). `UOpenRoadVehicleComponent` owns an `ord::Vehicle`. Build on UE 5.4+. *Accept:* compiles on Win64 with UE 5.4/5.5/5.6. Car drives on the proving-ground level.
@@ -64,8 +74,8 @@ Turbo boost/lag, supercharger, EV motor envelopes, hybrid, torque converter, vis
 
 ## Next five engineering priorities
 
-1. Compile the UE5 plugin on UE 5.4–5.6 and fix the API assumptions listed in its README (M1.1–M1.3)
-2. Headless-vs-Chaos parity validation (< 1% on B1/B2/B4/B5) and real UE ray-cost profiling (M1.2)
-3. Proving-ground level mirroring `TestTrackGround` + Chaos Vehicles A/B baseline (M1.6–M1.7)
+1. Compile the UE5 plugin on UE 5.4–5.6 and resolve the API assumptions recorded in its audit (M1.1–M1.3)
+2. Build the proving-ground level from the documented steps and drive the first car in Unreal; record headless-vs-Chaos parity (< 1% target on B1/B2/B4/B5) and real ray costs (M1.2, M1.6)
+3. Tire cleat-test calibration to settle the 5- vs 8-sample contact layout sensitivity (~30% on sharp curbs) and add continuous effective-road-profile enveloping (M2.2)
 4. Wet model: water-film depth on strips, speed-dependent grip, aquaplaning (M3.2)
 5. Kinematic suspension (camber/toe curves, geometric solvers with KinetiForge attribution) (M2.3)

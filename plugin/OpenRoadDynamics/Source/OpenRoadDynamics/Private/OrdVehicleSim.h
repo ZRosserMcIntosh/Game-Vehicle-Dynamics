@@ -29,6 +29,7 @@
 namespace ord
 {
 class Vehicle;
+struct RigidBodyState;
 }
 
 /** Rigid-body state as Chaos reports it (UE frame and units). */
@@ -41,6 +42,7 @@ struct FOrdBodyState
 	FVector AngularVelocity = FVector::ZeroVector; // world, rad/s (UE axes)
 	double MassKg = 0.0;                           // diagnostics
 	FVector InertiaKgCm2 = FVector::ZeroVector;    // diagnostics: Chaos local diagonal inertia
+	double RotationOfMassDeg = 0.0;                // diagnostics: angle of Chaos' principal frame vs body axes
 };
 
 /** World-space force at the Chaos CoM and torque about it, Chaos units. */
@@ -60,6 +62,7 @@ struct FOrdGameInput
 	ord::AssistConfig Assists;
 	uint32 AssistsRevision = 0;     // the physics thread applies Assists when this changes
 	std::shared_ptr<const ord::GroundPrefetchCache> Ground;  // immutable once published
+	double GroundRequestTime = 0.0; // core time of the state the strips were requested for (FOrdSimSnapshot::StripRequestTime)
 	double VehicleRateHz = 240.0;   // vehicle-local rate: substeps = ceil(dt * rate), 1 at a 240 Hz world step
 	bool bDebugDraw = false;
 	double DebugForceScale = 1.0 / 5000.0;  // m of arrow per N
@@ -98,7 +101,29 @@ struct FOrdSimSnapshot
 
 	int32 NumStripRequests = 0;
 	std::array<ord::GroundStripRequest, ord::kMaxWheels> StripRequests{};
-	uint64 GroundCacheMisses = 0; // cumulative misses of the cache used this step
+	double StripRequestTime = 0.0;   // core time of the chassis state the requests describe (start of this step)
+
+	// Ground-cache health. A "miss" is a contact query outside every strip,
+	// answered by extrapolating the nearest strip (no engine trace on this thread).
+	uint64 GroundCacheMisses = 0;    // cumulative for this vehicle (monotonic)
+	uint32 GroundCacheMissesStep = 0;// misses during this step
+	double GroundCacheAge = 0.0;     // s: end of this step minus GroundRequestTime of the cache used.
+	                                 // The strip horizon must exceed this (adaptive horizon feeds on it).
+
+	// Host coupling (ord::Vehicle::hostSync()): host-integrated vs core-predicted
+	// chassis at the start of this step. Near zero when Chaos applied our wrench
+	// exactly as assumed (frame, units, CoM, per-step force clearing).
+	double HostSyncPositionErrorCm = 0.0;
+	double HostSyncAngleErrorDeg = 0.0;
+	double HostSyncMaxPositionErrorCm = 0.0;
+	double HostSyncMaxAngleErrorDeg = 0.0;
+
+	// Velocity reference check (README item 5): finite-difference velocity of the
+	// Chaos CoM and of the body origin over the last step, minus the velocity
+	// Chaos reported. The one that stays ~0 tells what V() refers to.
+	double VelocityCheckComCmS = -1.0;    // -1 = not available this step
+	double VelocityCheckOriginCmS = -1.0;
+	double RotationOfMassDeg = 0.0;
 
 	// Mass-property agreement between the core and Chaos (validation).
 	double ComMismatchCm = 0.0;
@@ -128,11 +153,25 @@ public:
 	 */
 	FOrdBodyWrench Step(double Dt, const FOrdBodyState& Body, const FOrdGameInput& Input, FOrdSimSnapshot& Out);
 
+	/**
+	 * Physics thread. The body is not simulated this step (static/kinematic):
+	 * only syncs the core's chassis to it, so the next Step() neither compares
+	 * against a stale prediction nor carries a stale wheel state.
+	 */
+	void SyncOnly(const FOrdBodyState& Body);
+
 private:
-	void FillStripRequests(FOrdSimSnapshot& Out);
+	void FillStripRequests(FOrdSimSnapshot& Out, double RequestTime);
+	ord::RigidBodyState ToCoreState(const FOrdBodyState& Body, ord::Vec3& OutComOffset) const;
+	void UpdateVelocityCheck(double Dt, const FOrdBodyState& Body, FOrdSimSnapshot& Out);
 
 	std::unique_ptr<ord::Vehicle> Vehicle;
 	std::shared_ptr<const ord::GroundPrefetchCache> Ground;  // latest cache received
+	double GroundRequestTime = 0.0;
+	uint64 GroundMissesTotal = 0;
+	FVector PrevHostCom = FVector::ZeroVector;
+	FVector PrevHostOrigin = FVector::ZeroVector;
+	bool bHavePrevBody = false;
 	std::vector<ord::GroundStripRequest> RequestScratch;
 	uint32 LastShiftUpCount = 0;
 	uint32 LastShiftDownCount = 0;

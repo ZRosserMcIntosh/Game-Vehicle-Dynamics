@@ -53,7 +53,17 @@ void FOrdSimSnapshot::Reset()
 	Substeps = 1;
 	bHasTelemetry = false;
 	NumStripRequests = 0;
+	StripRequestTime = 0.0;
 	GroundCacheMisses = 0;
+	GroundCacheMissesStep = 0;
+	GroundCacheAge = 0.0;
+	HostSyncPositionErrorCm = 0.0;
+	HostSyncAngleErrorDeg = 0.0;
+	HostSyncMaxPositionErrorCm = 0.0;
+	HostSyncMaxAngleErrorDeg = 0.0;
+	VelocityCheckComCmS = -1.0;
+	VelocityCheckOriginCmS = -1.0;
+	RotationOfMassDeg = 0.0;
 	ComMismatchCm = 0.0;
 	HostMassKg = 0.0;
 	HostInertiaKgM2 = FVector::ZeroVector;
@@ -72,7 +82,7 @@ FOrdVehicleSim::FOrdVehicleSim(std::unique_ptr<ord::Vehicle> InVehicle)
 
 FOrdVehicleSim::~FOrdVehicleSim() = default;
 
-void FOrdVehicleSim::FillStripRequests(FOrdSimSnapshot& Out)
+void FOrdVehicleSim::FillStripRequests(FOrdSimSnapshot& Out, double RequestTime)
 {
 	RequestScratch.clear();
 	Vehicle->groundPrefetchRequests(RequestScratch);
@@ -82,6 +92,55 @@ void FOrdVehicleSim::FillStripRequests(FOrdSimSnapshot& Out)
 		Out.StripRequests[I] = RequestScratch[I];
 	}
 	Out.NumStripRequests = static_cast<int32>(Count);
+	Out.StripRequestTime = RequestTime;
+}
+
+ord::RigidBodyState FOrdVehicleSim::ToCoreState(const FOrdBodyState& Body, ord::Vec3& OutComOffset) const
+{
+	// ---- Chaos body -> core chassis state (ISO, metres; host_frame.hpp math) ----
+	const ord::VehicleDefinition& Def = Vehicle->definition();
+	ord::RigidBodyState State;
+	State.position = OrdFrame::PositionFromUe(Body.Position);
+	State.orientation = OrdFrame::RotationFromUe(Body.Rotation);
+	State.orientation.normalize();
+	State.angularVelocity = OrdFrame::AngularVelocityFromUe(Body.AngularVelocity);
+
+	// The core's CoM (from the definition) and Chaos' CoM should coincide (the
+	// component configures the body), but any residual offset is handled
+	// exactly: velocity is transported to the core CoM here, and the torque is
+	// transported back to the Chaos CoM in Step().
+	const ord::Vec3 HostCom = OrdFrame::PositionFromUe(Body.CenterOfMass);
+	const ord::Vec3 CoreCom = State.position + State.orientation.rotate(Def.centerOfMass);
+	OutComOffset = CoreCom - HostCom;
+	State.velocity = OrdFrame::VelocityFromUe(Body.LinearVelocity) + ord::cross(State.angularVelocity, OutComOffset);
+	return State;
+}
+
+void FOrdVehicleSim::UpdateVelocityCheck(double Dt, const FOrdBodyState& Body, FOrdSimSnapshot& Out)
+{
+	// Chaos (PBD) derives V from the position change of the step, so with a
+	// constant CoM offset (Com_n - Com_n-1) / dt == V_n when V is the CoM
+	// velocity; the origin version matches instead if V were the origin velocity.
+	// Contacts of the body shell (velocity solve, restitution) perturb both.
+	if (bHavePrevBody && Dt > 0.0)
+	{
+		Out.VelocityCheckComCmS = ((Body.CenterOfMass - PrevHostCom) / Dt - Body.LinearVelocity).Size();
+		Out.VelocityCheckOriginCmS = ((Body.Position - PrevHostOrigin) / Dt - Body.LinearVelocity).Size();
+	}
+	PrevHostCom = Body.CenterOfMass;
+	PrevHostOrigin = Body.Position;
+	bHavePrevBody = true;
+}
+
+void FOrdVehicleSim::SyncOnly(const FOrdBodyState& Body)
+{
+	if (!Vehicle)
+	{
+		return;
+	}
+	ord::Vec3 ComOffset;
+	Vehicle->setChassisState(ToCoreState(Body, ComOffset));
+	bHavePrevBody = false;  // the body may have been moved kinematically
 }
 
 FOrdBodyWrench FOrdVehicleSim::Step(double Dt, const FOrdBodyState& Body, const FOrdGameInput& Input, FOrdSimSnapshot& Out)
@@ -113,37 +172,37 @@ FOrdBodyWrench FOrdVehicleSim::Step(double Dt, const FOrdBodyState& Body, const 
 		Vehicle->assists().setConfig(Input.Assists);
 		AppliedAssistsRevision = Input.AssistsRevision;
 	}
-	if (Input.Ground)
+	if (Input.Ground && Input.Ground != Ground)
 	{
 		Ground = Input.Ground;  // keeps the immutable cache alive while we read it
+		GroundRequestTime = Input.GroundRequestTime;
 	}
 
-	// ---- Chaos body -> core chassis state (ISO, metres) ----
-	const ord::VehicleDefinition& Def = Vehicle->definition();
-	ord::RigidBodyState State;
-	State.position = OrdFrame::PositionFromUe(Body.Position);
-	State.orientation = OrdFrame::RotationFromUe(Body.Rotation);
-	State.orientation.normalize();
-	State.angularVelocity = OrdFrame::AngularVelocityFromUe(Body.AngularVelocity);
+	UpdateVelocityCheck(Dt, Body, Out);
+	Out.RotationOfMassDeg = Body.RotationOfMassDeg;
 
-	// The core's CoM (from the definition) and Chaos' CoM should coincide (the
-	// component configures the body), but any residual offset is handled
-	// exactly: velocity is transported to the core CoM, and the torque is
-	// transported back to the Chaos CoM below.
-	const ord::Vec3 HostCom = OrdFrame::PositionFromUe(Body.CenterOfMass);
-	const ord::Vec3 CoreCom = State.position + State.orientation.rotate(Def.centerOfMass);
-	const ord::Vec3 ComOffset = CoreCom - HostCom;
-	State.velocity = OrdFrame::VelocityFromUe(Body.LinearVelocity) + ord::cross(State.angularVelocity, ComOffset);
+	ord::Vec3 ComOffset;
+	const ord::RigidBodyState State = ToCoreState(Body, ComOffset);
+	// Also records hostSync() against the prediction of the previous step and
+	// carries unsprung wheels across small pose differences (core behaviour).
 	Vehicle->setChassisState(State);
+
+	const ord::Vehicle::HostSyncStats& Sync = Vehicle->hostSync();
+	Out.HostSyncPositionErrorCm = Sync.positionError * ord::host::kUeUnitsPerMetre;
+	Out.HostSyncAngleErrorDeg = FMath::RadiansToDegrees(Sync.angleError);
+	Out.HostSyncMaxPositionErrorCm = Sync.maxPositionError * ord::host::kUeUnitsPerMetre;
+	Out.HostSyncMaxAngleErrorDeg = FMath::RadiansToDegrees(Sync.maxAngleError);
 
 	Out.ComMismatchCm = ord::length(ComOffset) * ord::host::kUeUnitsPerMetre;
 	Out.HostMassKg = Body.MassKg;
 	Out.HostInertiaKgM2 = Body.InertiaKgCm2 / (ord::host::kUeUnitsPerMetre * ord::host::kUeUnitsPerMetre);
+	Out.GroundCacheMisses = GroundMissesTotal;
 
+	const double StartTime = Vehicle->time();
 	if (!Ground)
 	{
 		Out.bGroundMissing = true;
-		FillStripRequests(Out);
+		FillStripRequests(Out, StartTime);
 		return Wrench;
 	}
 
@@ -155,12 +214,22 @@ FOrdBodyWrench FOrdVehicleSim::Step(double Dt, const FOrdBodyState& Body, const 
 	LastShiftUpCount = Input.ShiftUpCount;
 	LastShiftDownCount = Input.ShiftDownCount;
 
-	// Vehicle-local substepping (ADR-0003): with a 240 Hz world step this is one
-	// plain step(); with a 60 Hz world step the core runs 4 internal substeps and
-	// returns the impulse-equivalent average wrench for the whole world step.
+	// Vehicle-local substepping (ADR-0003). In ChassisMode::External the core
+	// always integrates its own copy of the chassis (also for 1 substep) and
+	// returns the impulse-equivalent average wrench for the whole world step;
+	// the predicted end state feeds hostSync() at the next setChassisState().
 	const double RateHz = FMath::Max(1.0, Input.VehicleRateHz);
 	const int32 Substeps = FMath::Clamp(static_cast<int32>(std::ceil(Dt * RateHz - 1e-6)), 1, 16);
+	// Misses are counted per cache object (which is pooled and reused), so only
+	// the difference across this step is attributed to this vehicle. Only this
+	// thread queries the cache, so no other increment can interleave.
+	const uint64 MissesBefore = Ground->misses();
 	Vehicle->stepSubstepped(Dt, Substeps, Driver, *Ground);
+	const uint64 MissesStep = Ground->misses() - MissesBefore;
+	GroundMissesTotal += MissesStep;
+	Out.GroundCacheMissesStep = static_cast<uint32>(FMath::Min<uint64>(MissesStep, MAX_uint32));
+	Out.GroundCacheMisses = GroundMissesTotal;
+	Out.GroundCacheAge = (StartTime + Dt) - GroundRequestTime;
 	Out.Substeps = Substeps;
 
 	// ---- Core forces -> Chaos wrench ----
@@ -190,8 +259,9 @@ FOrdBodyWrench FOrdVehicleSim::Step(double Dt, const FOrdBodyState& Body, const 
 		Out.Telemetry = Vehicle->telemetry();
 		Out.bHasTelemetry = true;
 	}
-	FillStripRequests(Out);
-	Out.GroundCacheMisses = Ground->misses();
+	// Requests describe the chassis at StartTime (stepSubstepped restores the
+	// host-owned start state); the age of the next cache is measured from it.
+	FillStripRequests(Out, StartTime);
 
 	if (Input.bDebugDraw)
 	{

@@ -40,6 +40,11 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Plugin packaging + headless adapter check (stand-in UE types, not Unreal)
+        if: runner.os == 'Linux'
+        run: |
+          python3 tools/package_plugin.py --check
+          sh plugin/OpenRoadDynamics/Extras/HeadlessCheck/run.sh
 
   sanitizers:
     runs-on: ubuntu-24.04

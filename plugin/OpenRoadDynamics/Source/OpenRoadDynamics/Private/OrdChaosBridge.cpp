@@ -56,10 +56,12 @@ struct FOrdAsyncOutput : public Chaos::FSimCallbackOutput
 
 // ---------------------------------------------------------------------------
 // Sim callback: runs on the physics thread before every Chaos step.
-// Default options of TSimCallbackObject include ESimCallbackOptions::Presimulate. [UNVERIFIED]
+// Presimulate is requested explicitly instead of relying on the template's
+// default options. [UNVERIFIED: third template parameter, UE 5.1+]
 // ---------------------------------------------------------------------------
 
-class FOrdSimCallback final : public Chaos::TSimCallbackObject<FOrdAsyncInput, FOrdAsyncOutput>
+class FOrdSimCallback final
+	: public Chaos::TSimCallbackObject<FOrdAsyncInput, FOrdAsyncOutput, Chaos::ESimCallbackOptions::Presimulate>
 {
 public:
 	virtual ~FOrdSimCallback() override
@@ -106,7 +108,12 @@ FOrdBodyState ReadBodyState(const Chaos::FRigidBodyHandle_Internal& Handle)
 	// (the core assumes principal axes = body axes).
 	S.CenterOfMass = S.Position + S.Rotation.RotateVector(FVector(Handle.CenterOfMass()));
 	S.MassKg = Handle.M();                       // [UNVERIFIED]
-	S.InertiaKgCm2 = FVector(Handle.I());        // [UNVERIFIED] TVec3<FRealSingle>, local, kg*cm^2
+	S.InertiaKgCm2 = FVector(Handle.I());        // [UNVERIFIED] TVec3<FRealSingle>, principal (mass-space) diagonal, kg*cm^2
+	// Diagnostics only: the principal frame of the Chaos inertia relative to the
+	// body axes. Non-zero means I() is NOT expressed in body axes and the
+	// diagonal comparison / InertiaTensorScale mapping in ConfigureBody is off.
+	const FQuat RotationOfMass(Handle.RotationOfMass());  // [UNVERIFIED] accessor name / FRotation3 -> FQuat
+	S.RotationOfMassDeg = FMath::RadiansToDegrees(RotationOfMass.GetAngle());
 	return S;
 }
 }  // namespace
@@ -144,6 +151,10 @@ void FOrdSimCallback::OnPreSimulate_Internal()
 	const Chaos::EObjectStateType State = Handle->ObjectState();  // [UNVERIFIED]
 	if (State == Chaos::EObjectStateType::Static || State == Chaos::EObjectStateType::Kinematic)
 	{
+		// Not simulated (e.g. SetSimulatePhysics(false)): keep the core's chassis
+		// on the body so the core neither compares against a stale prediction
+		// nor carries stale wheel state when simulation resumes.
+		Sim->SyncOnly(ReadBodyState(*Handle));
 		Output.Snapshot.Reset();
 		return;
 	}
@@ -157,8 +168,11 @@ void FOrdSimCallback::OnPreSimulate_Internal()
 	{
 		// [UNVERIFIED] world-space force at the CoM and world-space torque, both
 		// accumulated for this step only and cleared by Chaos after integration.
-		Handle->AddForce(Wrench.Force);
-		Handle->AddTorque(Wrench.Torque);
+		// These are the physics-thread handle's AddForce/AddTorque (force, not
+		// acceleration; there is no bAccelChange here). bInvalidate = false: the
+		// body is already Dynamic (awake) and we must not wake sleeping bodies.
+		Handle->AddForce(Wrench.Force, /*bInvalidate*/ false);
+		Handle->AddTorque(Wrench.Torque, /*bInvalidate*/ false);
 	}
 }
 
@@ -204,6 +218,7 @@ bool FOrdChaosVehicleLink::Register(UWorld& World, UPrimitiveComponent& Body, TU
 
 	Callback = NewCallback;
 	Solver = PhysicsSolver;
+	SolverWorld = &World;
 	return true;
 }
 
@@ -212,13 +227,42 @@ void FOrdChaosVehicleLink::Unregister()
 	if (Callback && Solver)
 	{
 		check(IsInGameThread());
-		// [UNVERIFIED] queued: the solver stops calling us before freeing, so the
-		// vehicle is destroyed with the callback, after the last step that used it.
-		Solver->UnregisterAndFreeSimCallbackObject_External(Callback);
+		// Only talk to the solver if it is still the live solver of the world we
+		// registered with. During world teardown / GC the component can outlive
+		// the scene; the solver's destruction then owns the callback, and
+		// calling into a freed solver would be a use-after-free.
+		UWorld* World = SolverWorld.Get();
+		FPhysScene* Scene = World ? World->GetPhysicsScene() : nullptr;
+		if (Scene && Scene->GetSolver() == Solver)
+		{
+			ClearBody();  // a last input without a body, in this frame's data
+			// [UNVERIFIED] queued: the solver stops calling us before freeing, so the
+			// vehicle is destroyed with the callback, after the last step that used it.
+			Solver->UnregisterAndFreeSimCallbackObject_External(Callback);
+		}
+		else
+		{
+			UE_LOG(LogOpenRoad, Warning,
+			       TEXT("OpenRoad: sim callback not unregistered because its Chaos solver is already gone (world teardown)."));
+		}
 	}
 	Callback = nullptr;
 	Solver = nullptr;
 	Proxy = nullptr;
+	SolverWorld.Reset();
+	LastInput.Reset();
+}
+
+void FOrdChaosVehicleLink::ClearBody()
+{
+	check(IsInGameThread());
+	Proxy = nullptr;
+	if (Callback && LastInput)
+	{
+		// Same frame: overwrites the input pushed in TG_PrePhysics (assumption 3);
+		// either way the newest input the physics thread sees has no body.
+		PushInput(*LastInput);
+	}
 }
 
 void FOrdChaosVehicleLink::RefreshBody(UPrimitiveComponent& Body)
@@ -235,6 +279,14 @@ void FOrdChaosVehicleLink::PushInput(const FOrdGameInput& Input)
 	if (!Callback)
 	{
 		return;
+	}
+	if (!LastInput)
+	{
+		LastInput = MakeUnique<FOrdGameInput>();
+	}
+	if (&Input != LastInput.Get())
+	{
+		*LastInput = Input;
 	}
 	// [UNVERIFIED] returns this frame's input object (same object on repeated calls within a frame).
 	if (FOrdAsyncInput* AsyncInput = Callback->GetProducerInputData_External())

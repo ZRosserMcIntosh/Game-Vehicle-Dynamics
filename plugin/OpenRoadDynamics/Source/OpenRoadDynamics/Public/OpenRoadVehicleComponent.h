@@ -54,12 +54,26 @@ public:
 	TEnumAsByte<ECollisionChannel> GroundTraceChannel = ECC_Visibility;
 
 	/**
-	 * Seconds of predicted wheel travel covered by each per-frame ground strip, s.
-	 * Must cover the game-thread -> physics-thread latency (about two frames).
-	 * Raise it if the ground-cache miss counter grows at low frame rates.
+	 * Minimum seconds of predicted wheel travel covered by each per-frame ground
+	 * strip, s. The strip must cover the time from the physics step that
+	 * requested it until the physics step that receives the NEXT cache.
+	 * With bAdaptiveGroundHorizon the horizon grows above this value from the
+	 * measured cache age and game-frame time.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenRoad|Ground", meta = (ClampMin = "0.01", ClampMax = "0.5"))
 	float GroundPredictionSeconds = 0.075f;
+
+	/**
+	 * Adapt the strip horizon to the measured latency:
+	 * horizon = clamp(max(GroundPredictionSeconds, 1.5 * peak frame time, 1.25 * peak cache age + one physics step),
+	 *                 1/60 s, MaxGroundPredictionSeconds); peaks decay by 0.02 s per second (OrdGroundHorizon.h).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenRoad|Ground")
+	bool bAdaptiveGroundHorizon = true;
+
+	/** Upper bound of the adaptive horizon, s (longer strips cost more line traces per frame). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenRoad|Ground", meta = (ClampMin = "0.02", ClampMax = "1.0", EditCondition = "bAdaptiveGroundHorizon"))
+	float MaxGroundPredictionSeconds = 0.25f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "OpenRoad|Driving")
 	EOpenRoadPreset Preset = EOpenRoadPreset::Sport;
@@ -133,6 +147,29 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Driving")
 	void SetAssistOverrides(const FOpenRoadAssistOverrides& NewOverrides);
 
+	/** Convenience: overrides ABS on top of the preset. */
+	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Driving")
+	void SetAbsEnabled(bool bEnabled);
+
+	/** Convenience: overrides the traction-control level on top of the preset. */
+	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Driving")
+	void SetTractionControl(EOpenRoadIntervention Level);
+
+	/** Convenience: overrides the stability-control (ESC) level on top of the preset. */
+	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Driving")
+	void SetStabilityControl(EOpenRoadIntervention Level);
+
+	/** Convenience: overrides automatic/manual gear selection on top of the preset. */
+	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Driving")
+	void SetShiftMode(EOpenRoadShiftMode Mode);
+
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|Driving")
+	EOpenRoadPreset GetPreset() const { return Preset; }
+
+	/** Effective settings (preset + overrides, applied on the next physics step) and the latest aid activity. */
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|Driving")
+	FOpenRoadAssistState GetAssistState() const;
+
 	// ---------------------------------------------------------------- Readouts (latest physics snapshot)
 
 	/** Longitudinal speed, km/h. */
@@ -150,14 +187,29 @@ public:
 	UFUNCTION(BlueprintPure, Category = "OpenRoad|State")
 	bool IsVehicleActive() const;
 
-	/** Cumulative ground-cache misses (should stay ~0; see README "Validation plan"). */
+	/** Cumulative ground-cache misses of this vehicle (should stay ~0; see README "Validation plan"). */
 	UFUNCTION(BlueprintPure, Category = "OpenRoad|Debug")
 	int64 GetGroundCacheMisses() const;
+
+	/** Wheels of the vehicle (2 per axle), 0 when inactive. Index 2i = left, 2i+1 = right of axle i. */
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|State")
+	int32 GetNumWheels() const;
+
+	/** Latest per-wheel readout. Returns false (and a default state) for an invalid index or no data yet. */
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|State")
+	bool GetWheelState(int32 WheelIndex, FOpenRoadWheelState& OutState) const;
+
+	/** Coupling, mass-property and ground-cache health of the latest frame. */
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|Debug")
+	FOpenRoadDiagnostics GetDiagnostics() const;
 
 	// ---------------------------------------------------------------- Debug and telemetry
 
 	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Debug")
 	void SetDebugDrawEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintPure, Category = "OpenRoad|Debug")
+	bool IsDebugDrawEnabled() const { return bDebugDraw; }
 
 	/** Starts recording every physics step into a ring buffer of TelemetryCaptureSeconds. */
 	UFUNCTION(BlueprintCallable, Category = "OpenRoad|Telemetry")
@@ -173,19 +225,31 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Backstop: a component unregistered without EndPlay must still unregister its Chaos callback while the world lives. */
+	virtual void OnUnregister() override;
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
 	bool ActivateVehicle();
 	void DeactivateVehicle(const TCHAR* Reason);
+	void BindBody(UPrimitiveComponent* NewBody);
 	void DrawDebug() const;
 
-	/** Unregisters before Chaos destroys the body's proxy (the physics thread holds a raw proxy pointer). */
+	/**
+	 * Destroyed: forgets the proxy in this frame's input and unregisters (the
+	 * physics thread holds a raw proxy pointer). Created: re-activates the
+	 * vehicle on the next tick (state is rebuilt from the body; gear, wheel
+	 * spin and slip start fresh).
+	 */
 	UFUNCTION()
 	void HandleBodyPhysicsStateChanged(UPrimitiveComponent* ChangedComponent, EComponentPhysicsStateChange::Type StateChange);
 
+	/** The simulating root body we drive and whose physics-state delegate we are bound to. */
 	UPROPERTY(Transient)
 	TObjectPtr<UPrimitiveComponent> Body;
+
+	/** Set when the body's physics state was (re)created while the vehicle was inactive. */
+	bool bPendingReactivate = false;
 
 	// Driver state (game thread). Shift presses are counters so the physics
 	// thread sees exactly one edge per press whatever the step/frame ratio.

@@ -64,3 +64,34 @@ The rate choice question from ADR-0001 is answered this way. With the multi-poin
 - The strip is a local height field. Overhangs, tunnels and multi-level interchanges (common on Brazilian highways) need the host to cast from the right level. The strip starts 1 m above the wheel's current contact, so it samples the deck the car is on. Bridge edges and very steep transitions are not yet benchmarked (roadmap).
 - Potholes smaller than the coarse spacing (0.35 m) on *untagged* smooth materials can be missed. Content rule: tag defect decals and meshes with a rough physical material.
 - Strip reuse across frames (overlap) could halve rays again. Not done yet.
+
+## Update 2026-10-11: coupling audit and tire envelope probes
+
+An independent audit tested the main assumption here: that a 60 Hz host body receiving only the *average* force of 4 vehicle substeps behaves like a chassis coupled to the suspension at the full rate.
+
+**Findings**
+
+1. **The coupling itself is sound.** On an 8 cm curb at 120 km/h, host-mode results match internal mode at the *same vehicle rate* within ~4% (peak heave 0.0102 m vs 0.0099 m at 240 Hz). The host's pose differs from the vehicle's own substep prediction by well under a millimetre per step on rough roads.
+   - New diagnostic: `Vehicle::hostSync()` reports this error, so the same check can run against Chaos.
+   - On each sync, unsprung wheels now keep their absolute position and velocity, and the suspension absorbs the difference instead of the tire penetration jumping.
+   - The measured effect of this is small.
+2. **The real defect was rate convergence of the contact model on sharp edges.** With the flat-footprint patch, peak heave over the curb varied non-monotonically with rate: 0.0086, 0.0099, 0.0109 and 0.0087 m at 120, 240, 480 and 1000 Hz.
+   - A near-vertical step sampled by discrete vertical rays is an event whose effect depends on where the step lands relative to the timesteps.
+   - The earlier "within 10%" result held only at 60 km/h, and partly because the host-mode metric sampled acceleration at 60 Hz while the reference sampled at 1000 Hz.
+3. **Fix: envelope probes** (`VehicleFidelity::envelopeProbes`, default 3 per side). These are radial samples at 0.40, 0.55 and 0.70 of the radius ahead of and behind the patch, measured against the tire's circular profile.
+   - They carry zero load on flat ground (tested). They pick up a step before the patch reaches it, with a radial force that gives the longitudinal impact.
+   - This is the geometric enveloping idea of Pacejka (2012) ch. 10 and Schmeitz's cam-based enveloping model, in a simplified discrete form.
+   - With the ground cache, probes cost lookups, not engine rays. The prefetch strip length grows to cover them.
+4. **Rate-fair metrics** were added to the rough-road scenarios: peak CoM heave, and vertical acceleration averaged over 60 Hz windows.
+
+**Result.** Through the production ground path (prefetch cache), the 8 cm curb at 120 km/h is within ±7% across 240–2000 Hz with probes; without them it was off by up to 21%. At 240 Hz it is within 2% of 2000 Hz (regression test).
+
+The 60 Hz host × 4 configuration now stays within 10% of a 1000 Hz reference on curbs at both 60 and 120 km/h. The comparison is like for like (both cached, rate-fair metrics).
+
+**Remaining limit.** Raw, perfectly sharp steps fed directly (not through the cache's 6 cm sampling) still show some rate aliasing. A continuous effective-road-profile evaluation (moving cams along the profile) would remove it, at higher cost. This is tracked on the roadmap.
+
+**Hitches.** `GroundPrefetchCache::setHorizon()` lets the host size the strips from measured frame times. A 100 ms game-thread hitch at 200 km/h degrades gracefully: extrapolation keeps the car on the road and misses are counted (test). Strips cannot be extended *during* an unforeseen hitch, so extrapolation is the safety net.
+
+**Model sensitivity (open).** Patch layouts converge with rate, each to its own value. On the 8 cm / 120 km/h curb, peak heave converges to ~0.0110 m with 5 samples and ~0.0079 m with the 8- or 9-sample layouts: the edge response depends ~30% on how stiffness is spread across the footprint.
+- This is a modelling choice that needs calibration against measured tire data (cleat/enveloping tests). It is not a numerical error.
+- Until then, 5 samples remain the default. The Forza-like 8-point option is **not** claimed to be more accurate.

@@ -146,6 +146,9 @@ struct RoughRoadResult {
     Real rmsVerticalAccelG = 0; // body, over the feature
     Real loadVariation = 0;     // std/mean of the affected tire loads over the feature
     Real wheelAirborneTime = 0; // s, affected wheels off the ground
+    // Rate-independent measures (comparable across physics rates):
+    Real maxHeave = 0;          // m, peak CoM rise over the feature
+    Real rmsFrameAccelG = 0;    // body vertical accel averaged over 60 Hz windows
 };
 // B19: 8 cm curb (raised strip, 0.5 m wide, 2 cm edge ramps) under the left wheels.
 RoughRoadResult curbStrike(const RunConfig& cfg, Real speedKmh, Real height = 0.08);

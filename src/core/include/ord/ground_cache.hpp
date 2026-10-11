@@ -97,6 +97,11 @@ public:
     std::size_t roughStripsLastRebuild() const { return roughStrips_; }
     std::uint64_t misses() const { return misses_.load(std::memory_order_relaxed); }
     const Settings& settings() const { return settings_; }
+    // Seconds of predicted travel each strip covers. Hosts should set this from
+    // the *measured* frame time before rebuilding (e.g. 1.5 x the worst recent
+    // frame), so a hitching game thread still publishes strips long enough to
+    // reach the next rebuild. Clamped to [1/240 s, 0.5 s].
+    void setHorizon(Real seconds) { settings_.horizon = clamp(seconds, 1.0 / 240.0, 0.5); }
 
 private:
     struct Sample {

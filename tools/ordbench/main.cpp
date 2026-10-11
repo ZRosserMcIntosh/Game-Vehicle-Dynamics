@@ -200,6 +200,17 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--csv-dir") && i + 1 < argc) csvDir = argv[++i];
         else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
+        else if (!std::strcmp(argv[i], "--write-baseline") && i + 1 < argc) {
+            std::ofstream out(argv[++i]);
+            out << "# OpenRoad Dynamics golden baseline. Regenerate ONLY deliberately with:\n"
+                   "#   ./build/ordbench --write-baseline benchmarks/baseline.csv\n"
+                   "# and explain every changed value in the pull request.\n"
+                   "metric,value,rel_tolerance\n";
+            out << std::setprecision(10);
+            for (const auto& m : computeBaselineMetrics()) out << m.name << ',' << m.value << ',' << m.relTolerance << '\n';
+            std::cout << "baseline written\n";
+            return 0;
+        }
     }
     const Car cars[] = {{"sports", vehicles::referenceSportsRwd()},
                         {"hatch", vehicles::referenceHatchFwd()},

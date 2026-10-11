@@ -194,4 +194,15 @@ TransitionResult lodTransition(Real speedKmh = 70.0);
 // B22: symmetric undamped car, small heave impulse; measured vs analytic quarter-car modes.
 FrequencyResult suspensionFrequencies(const RunConfig& cfg);
 
+// ---- Golden baseline (benchmarks/baseline.csv) ----
+// Key metrics that must not change silently. tests/test_baseline.cpp compares
+// them with the committed file; `ordbench --write-baseline FILE` regenerates it
+// (a deliberate, reviewable diff).
+struct BaselineMetric {
+    std::string name;
+    Real value;
+    Real relTolerance;  // relative tolerance used by the comparison test
+};
+std::vector<BaselineMetric> computeBaselineMetrics();
+
 }  // namespace ord::scenarios

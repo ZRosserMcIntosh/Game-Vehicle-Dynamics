@@ -207,6 +207,7 @@ void Vehicle::staticWheelLoads(std::array<Real, kMaxWheels>& load) const {
 
 void Vehicle::placeOnGround(Real x, Real y, Real yaw, const GroundQuery& ground, Real vx, Real vy, Real yawRate) {
     if (!valid_) return;
+    faulted_ = false;
     havePrediction_ = false;
     forces_ = {};
     const std::size_t nw = def_.wheels.size();
@@ -394,16 +395,34 @@ int Vehicle::sampleContact(std::size_t w, const Vec3& hp, const Vec3& up, const 
     return n;
 }
 
+bool Vehicle::stateFinite() const {
+    if (!isFinite(body_.position) || !isFinite(body_.velocity) || !isFinite(body_.angularVelocity)) return false;
+    if (!std::isfinite(body_.orientation.w) || !std::isfinite(body_.orientation.x) ||
+        !std::isfinite(body_.orientation.y) || !std::isfinite(body_.orientation.z))
+        return false;
+    if (!isFinite(forces_.force) || !isFinite(forces_.torque)) return false;
+    for (std::size_t w = 0; w < def_.wheels.size(); ++w)
+        if (!std::isfinite(wheels_[w].compression) || !std::isfinite(wheels_[w].omega)) return false;
+    return std::isfinite(drivetrain_.engineOmega());
+}
+
 void Vehicle::step(Real dt, const DriverInput& input, const GroundQuery& ground) {
-    if (!valid_) return;
+    if (!valid_ || faulted_ || !(dt > 0) || !std::isfinite(dt)) return;
+    const RigidBodyState before = body_;
     computeStep(dt, input, ground);
     if (chassisMode_ == ChassisMode::Internal) integrateChassis(dt);
+    if (!stateFinite()) {
+        body_ = before;
+        forces_ = {};
+        faulted_ = true;
+        return;
+    }
     time_ += dt;
     lastDt_ = dt;
 }
 
 void Vehicle::stepSubstepped(Real hostDt, int substeps, const DriverInput& input, const GroundQuery& ground) {
-    if (!valid_) return;
+    if (!valid_ || faulted_ || !(hostDt > 0) || !std::isfinite(hostDt)) return;
     substeps = std::max(substeps, 1);
     const Real h = hostDt / substeps;
     if (chassisMode_ == ChassisMode::Internal) {
@@ -425,6 +444,13 @@ void Vehicle::stepSubstepped(Real hostDt, int substeps, const DriverInput& input
         in.shiftUp = in.shiftDown = false;  // edge-triggered inputs apply once
     }
     forces_ = {impulse / hostDt, angularImpulse / hostDt};
+    if (!stateFinite()) {
+        body_ = start;
+        forces_ = {};
+        faulted_ = true;
+        havePrediction_ = false;
+        return;
+    }
     predicted_ = body_;
     havePrediction_ = true;
     body_ = start;  // the host owns the chassis; it calls setChassisState() next

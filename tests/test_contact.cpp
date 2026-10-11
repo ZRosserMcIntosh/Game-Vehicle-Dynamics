@@ -205,6 +205,7 @@ TEST_CASE("ground cache: a 100 ms game-thread hitch at 200 km/h degrades gracefu
         const Vec3 c = v.centerOfMassWorld();
         CHECK(c.z - world.heightAt(c.x, c.y) > 0.2);
         CHECK(c.z - world.heightAt(c.x, c.y) < 1.0);
+        CHECK(!v.faulted());
         // Strips run out during the hitch either way (the game thread cannot know
         // in advance); the adaptive horizon only helps once slow frames are measured.
         CHECK(cache.misses() > 0);

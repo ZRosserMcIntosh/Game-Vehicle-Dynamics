@@ -106,7 +106,9 @@ void AssistSystem::applyAbs(const DriverInput& in, const VehicleSensors& s, Actu
     for (std::size_t w = 0; w < s.wheelCount; ++w) {
         Real& p = absPressure_[w];
         report_.absActive[w] = false;
-        if (!cfg_.abs || pedal <= 0 || !s.wheelInContact[w] || s.wheelGroundSpeed[w] < 2.0) {
+        if (!cfg_.abs) {
+            p = 1.0;  // disabled means no modulation at all, immediately (no hidden residual aid)
+        } else if (pedal <= 0 || !s.wheelInContact[w] || s.wheelGroundSpeed[w] < 2.0) {
             p = approach(p, 1.0, 10.0 * s.dt);
         } else {
             const Real slip = slipRatio(s.wheelOmega[w], s.wheelRadius[w], s.wheelGroundSpeed[w], 1.0);
@@ -190,6 +192,11 @@ void AssistSystem::applyEsc(const VehicleSensors& s, ActuatorCommands& cmd) {
 ActuatorCommands AssistSystem::process(const DriverInput& in, const VehicleSensors& s) {
     ActuatorCommands cmd;
     cmd.steerAngle = shapeSteer(in, s);
+    if (steerBlend_ > 0) {
+        cmd.steerAngle = lerp(cmd.steerAngle, steerBlendFrom_, steerBlend_);
+        steerBlend_ = std::max(0.0, steerBlend_ - s.dt / kSteerBlendTime);
+    }
+    lastSteerAngle_ = cmd.steerAngle;
 
     const Real thr = clamp(in.throttle, 0.0, 1.0);
     throttleState_ = cfg_.throttleRate > 0 ? approach(throttleState_, thr, cfg_.throttleRate * s.dt) : thr;

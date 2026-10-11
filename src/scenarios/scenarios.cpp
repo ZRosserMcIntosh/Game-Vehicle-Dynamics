@@ -815,3 +815,38 @@ TransitionResult lodTransition(Real speedKmh) {
 
 }  // namespace ord::scenarios
 
+namespace ord::scenarios {
+
+std::vector<BaselineMetric> computeBaselineMetrics() {
+    std::vector<BaselineMetric> m;
+    RunConfig sim;
+    sim.vehicle = vehicles::referenceSportsRwd();
+    sim.assists = makePreset(DrivingPreset::Simulation);
+    sim.hz = 240;
+    RunConfig sport = sim;
+    sport.assists = makePreset(DrivingPreset::Sport);
+    m.push_back({"sports_sport_0_100_s", accelerate0to100(sport).time0to100, 0.01});
+    RunConfig absCfg = sim;
+    absCfg.assists.abs = true;
+    m.push_back({"sports_abs_100_0_m", brake100to0(absCfg).distance, 0.01});
+    m.push_back({"sports_locked_100_0_m", brake100to0(sim).distance, 0.01});
+    m.push_back({"sports_skidpad_r40_g", skidpad(sim).maxLateralG, 0.01});
+    m.push_back({"sports_stepsteer_80_yaw_rads", stepSteer(sim).steadyYawRate, 0.01});
+    const SineDwellResult sd = sineWithDwell(sim, 9.0 * kPi / 180);
+    m.push_back({"sports_sinedwell9_max_sideslip_rad", sd.maxSideslip, 0.03});
+    RunConfig cached = sim;
+    cached.prefetch = true;
+    m.push_back({"sports_curb120_cached_max_heave_m", curbStrike(cached, 120).maxHeave, 0.03});
+    m.push_back({"sports_cobble_texture40_rms_g", cobblestones(cached, 40, true).rmsVerticalAccelG, 0.02});
+    m.push_back({"sports_pothole60_rms_frame_g", pothole(sim, 60).rmsFrameAccelG, 0.02});
+    const FrequencyResult fr = suspensionFrequencies(sim);
+    m.push_back({"sports_heave_hz", fr.heaveHz, 0.005});
+    m.push_back({"sports_wheelhop_hz", fr.wheelHopHz, 0.005});
+    RunConfig hatch = sim;
+    hatch.vehicle = vehicles::referenceHatchFwd();
+    m.push_back({"hatch_sim_0_100_s", accelerate0to100(hatch).time0to100, 0.01});
+    m.push_back({"hatch_skidpad_r40_g", skidpad(hatch).maxLateralG, 0.01});
+    return m;
+}
+
+}  // namespace ord::scenarios

@@ -27,6 +27,15 @@ struct Registrar {
     Registrar(const char* n, std::function<void()> f) { registry().push_back({n, std::move(f)}); }
 };
 
+// Long-running scenarios run at full length in optimised builds and shortened
+// (same invariants, fewer simulated seconds) in Debug/sanitizer builds.
+inline constexpr bool kOptimisedBuild =
+#ifdef NDEBUG
+    true;
+#else
+    false;
+#endif
+
 }  // namespace ordtest
 
 #define ORD_CAT2(a, b) a##b

@@ -79,6 +79,14 @@ contribute more. Real ESC and brake-based torque vectoring do the same, so this 
 physically legitimate. It is tracked so that aid tuning never turns into a
 hidden handicap for SIMULATION players.
 
+## Switching presets while driving
+
+`AssistSystem::setConfig()` can be called at any time.
+- Physical aids (ABS, TCS, ESC) switch immediately, with no residual effect.
+- If the steering *mapping* changes (direct vs speed-sensitive, exponent, slip target), the road-wheel angle crossfades from the old mapping's output to the new one over 0.3 s. Without the crossfade, switching FUN → SIMULATION mid-corner made the front wheels jump by several degrees.
+
+Covered by regression tests.
+
 ## Planned (roadmap)
 
 - Braking assist (brake-pressure ramp), launch control, anti-stall, auto-blip.

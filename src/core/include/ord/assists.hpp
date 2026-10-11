@@ -100,7 +100,20 @@ struct AssistReport {
 class AssistSystem {
 public:
     explicit AssistSystem(const AssistConfig& cfg = {}) : cfg_(cfg) {}
-    void setConfig(const AssistConfig& cfg) { cfg_ = cfg; }
+    // Switching configuration while driving is allowed (e.g. preset change).
+    // The steering *mapping* can change abruptly between presets (speed-
+    // sensitive vs direct), so the road-wheel angle blends from the old
+    // mapping's output to the new one over kSteerBlendTime instead of
+    // jumping. Physical aids switch immediately (no lingering effect).
+    void setConfig(const AssistConfig& cfg) {
+        if (cfg.steeringMode != cfg_.steeringMode || cfg.steeringExponent != cfg_.steeringExponent ||
+            cfg.targetFrontSlipAngle != cfg_.targetFrontSlipAngle) {
+            steerBlend_ = 1.0;
+            steerBlendFrom_ = lastSteerAngle_;
+        }
+        cfg_ = cfg;
+    }
+    static constexpr Real kSteerBlendTime = 0.3;  // s
     const AssistConfig& config() const { return cfg_; }
 
     // Turns raw driver input into actuator commands.
@@ -119,6 +132,9 @@ private:
     AssistConfig cfg_;
     AssistReport report_;
     Real steerState_ = 0;
+    Real lastSteerAngle_ = 0;  // previous output, for configuration blends
+    Real steerBlend_ = 0;      // 1 -> 0 over kSteerBlendTime after a mapping change
+    Real steerBlendFrom_ = 0;  // output angle at the moment of the change (linear crossfade origin)
     Real throttleState_ = 0;
     std::array<Real, kMaxWheels> absPressure_{1, 1, 1, 1, 1, 1, 1, 1};
     Real tcsCut_ = 0;

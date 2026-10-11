@@ -89,3 +89,17 @@ Not yet measured: the UE-side cost of each ray (Chaos scene query), the cost of 
 
 - **Precision:** handled. The core is double precision, and UE5 Large World Coordinates are double precision too.
 - **Open:** prefetch strips start 1 m above the wheel's current contact, which suits stacked interchanges (viadutos) when driving on a deck. Benchmarks for deck edges, ramps and tunnels are still to do.
+
+### R10. Untrusted vehicle data and numerical faults (added 2026-10-11)
+
+- **Found by fuzzing:** 232 of 3,000 randomly perturbed definitions passed validation and then produced NaN. Causes included 0.1 mm suspension travel, ×1000 tire radius, steering lock beyond 90°, non-finite torque-curve points, wheels heavier than their corner's share of the car, and a 70 t vehicle on car springs.
+- **Fix:**
+  - `VehicleDefinition::validate()` now enforces documented physical ranges, a per-wheel unsprung-mass limit, and a static-support check.
+  - A **runtime fault guard** (`Vehicle::faulted()`) keeps the last finite state and zeroes forces if a step ever produces NaN/Inf. Hosts never receive non-finite forces.
+- **Evidence:** a fuzz regression test (400 cases per run) requires zero NaN *and* zero faults for definitions that validate. A corrupted-ground test checks that NaN ground data faults the vehicle cleanly.
+
+### R11. Hidden assist effects (added 2026-10-11)
+
+- **Found:** disabling ABS mid-stop left its brake-pressure reduction in place for ~0.1 s while reporting ABS as inactive. That is a hidden aid. Switching presets while driving also changed the steering map instantly, producing a 124 m/s³ lateral jerk.
+- **Fix:** disabled ABS stops modulating immediately. A change of steering mapping crossfades the road-wheel angle linearly over 0.3 s. Physical aids still switch instantly.
+- **Evidence:** regression tests check full brake torque on the step after disabling ABS, and a bounded per-step steering change during preset switches.

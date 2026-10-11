@@ -21,4 +21,11 @@ VehicleDefinition referenceHatchFwd();
 // ~1600 kg, ~280 kW AWD saloon, 40/60 open centre split, rear LSD.
 VehicleDefinition referenceSaloonAwd();
 
+// ~750 kg, ~450 kW open-wheel race car with very high downforce
+// (Cl*A 3.6 m^2 total) on slick tires. Fictional.
+VehicleDefinition referenceRaceDownforce();
+
+// ~1500 kg, ~1100 kW AWD hypercar geared for ~450 km/h. Fictional.
+VehicleDefinition referenceHypercarAwd();
+
 }  // namespace ord::vehicles

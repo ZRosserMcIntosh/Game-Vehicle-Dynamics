@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "reference_vehicles.hpp"
 
+#include "ord/tire_generator.hpp"
+
 namespace ord::vehicles {
 
 namespace {
@@ -157,6 +159,89 @@ VehicleDefinition referenceSaloonAwd() {
     d.aero.frontDownforceArea = 0.0;
     d.aero.rearDownforceArea = 0.0;
     d.aero.dragArea = 0.72;
+    return d;
+}
+
+VehicleDefinition referenceRaceDownforce() {
+    VehicleDefinition d;
+    d.name = "ORD Reference Race Downforce";
+    d.mass = 750;
+    d.inertia = {120, 900, 950};
+    d.centerOfMass = {0, 0, 0};
+    TireSpec fs{305, 40, 13, TireCategory::Slick, 2400};  // generic 13-inch slick sizes
+    TireSpec rs{405, 40, 13, TireCategory::Slick, 3000};
+    WheelDef f;
+    f.tire = generateTireParams(fs);
+    f.unsprungMass = 14;
+    f.suspension.travel = 0.06;
+    f.suspension.springRate = 160000;
+    f.suspension.bumpDamping = 5500;
+    f.suspension.reboundDamping = 8000;
+    f.suspension.bumpStopRate = 900000;
+    f.maxSteerAngle = 0.35;
+    f.maxBrakeTorque = 3200;
+    WheelDef r = f;
+    r.tire = generateTireParams(rs);
+    r.unsprungMass = 16;
+    r.suspension.springRate = 180000;
+    r.maxSteerAngle = 0;
+    r.maxBrakeTorque = 2400;
+    // Wheelbase 3.0 m, 45/55 static split; hardpoints low (ride height ~3 cm at the stops).
+    addFourWheels(d, {1.65, -1.35, 0.80, 0.78, 0.02}, f, r);
+    d.axles = {{0, 1, 90000}, {2, 3, 60000}};
+    auto& e = d.drivetrain.engine;
+    e.torqueCurve = {{3000, 250}, {6000, 330}, {9000, 380}, {11500, 375}, {12500, 340}};
+    e.idleRpm = 3000;
+    e.limiterRpm = 12500;
+    e.inertia = 0.06;
+    d.drivetrain.clutch.maxTorque = 900;
+    d.drivetrain.gearbox.forwardRatios = {2.9, 2.2, 1.8, 1.5, 1.28, 1.12, 1.0, 0.9};
+    d.drivetrain.gearbox.shiftTime = 0.05;
+    d.drivetrain.gearbox.kind = TransmissionKind::Sequential;
+    DrivenAxle rear;
+    rear.axleIndex = 1;
+    rear.differential.type = DifferentialType::ClutchLsd;
+    rear.differential.finalDrive = 3.4;
+    d.drivetrain.drivenAxles = {rear};
+    d.aero.dragArea = 1.10;
+    d.aero.frontDownforceArea = 1.55;
+    d.aero.rearDownforceArea = 2.05;
+    return d;
+}
+
+VehicleDefinition referenceHypercarAwd() {
+    VehicleDefinition d = referenceSportsRwd();
+    d.name = "ORD Reference Hypercar AWD";
+    d.mass = 1500;
+    d.inertia = {550, 2100, 2300};
+    TireSpec fs{285, 30, 20, TireCategory::UltraHighPerformance, 3500};
+    TireSpec rs{355, 25, 21, TireCategory::UltraHighPerformance, 3900};
+    for (std::size_t w = 0; w < 4; ++w) {
+        d.wheels[w].tire = generateTireParams(w < 2 ? fs : rs);
+        d.wheels[w].suspension.springRate = w < 2 ? 70000 : 80000;
+        d.wheels[w].maxBrakeTorque = w < 2 ? 4500 : 3000;
+    }
+    auto& e = d.drivetrain.engine;
+    e.torqueCurve = {{1000, 700}, {2500, 1300}, {4000, 1500}, {6500, 1500}, {7800, 1250}, {8500, 1100}};
+    e.idleRpm = 1000;
+    e.limiterRpm = 8500;
+    e.inertia = 0.25;
+    d.drivetrain.clutch.maxTorque = 2600;
+    d.drivetrain.gearbox.forwardRatios = {3.0, 2.15, 1.65, 1.32, 1.08, 0.9, 0.76};
+    d.drivetrain.gearbox.shiftTime = 0.08;
+    DrivenAxle front;
+    front.axleIndex = 0;
+    front.torqueShare = 0.35;
+    front.differential.finalDrive = 2.9;
+    DrivenAxle rear;
+    rear.axleIndex = 1;
+    rear.torqueShare = 0.65;
+    rear.differential.type = DifferentialType::ClutchLsd;
+    rear.differential.finalDrive = 2.9;
+    d.drivetrain.drivenAxles = {front, rear};
+    d.aero.dragArea = 0.62;
+    d.aero.frontDownforceArea = 0.25;
+    d.aero.rearDownforceArea = 0.35;
     return d;
 }
 

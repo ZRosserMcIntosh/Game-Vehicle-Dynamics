@@ -80,6 +80,11 @@ public:
 
     bool isValid() const { return valid_; }
     const std::string& error() const { return error_; }
+    // Numerical fault guard: if a step ever produces a non-finite force or
+    // state, the previous chassis state is kept, forces are zeroed and the
+    // vehicle stops stepping until reset()/placeOnGround(). Hosts must never
+    // receive NaN/Inf (it would poison their rigid-body solver).
+    bool faulted() const { return faulted_; }
 
     // Places the car at rest on the ground under (x, y), heading `yaw`
     // (rad about +Z), in static equilibrium (analytic, then a short settle).
@@ -208,7 +213,9 @@ private:
 
     VehicleDefinition def_;
     bool valid_ = false;
+    bool faulted_ = false;
     std::string error_;
+    bool stateFinite() const;
     VehicleFidelity fidelity_;
     std::vector<MagicFormulaTire> tires_;
     AssistSystem assists_;

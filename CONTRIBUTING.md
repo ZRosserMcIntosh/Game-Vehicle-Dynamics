@@ -46,6 +46,14 @@ ctest --test-dir build --output-on-failure
 - One logical change per pull request; include benchmark output when touching physics.
 - Architecture-level changes need an ADR in `docs/decisions/`.
 
+## Golden baseline
+
+`benchmarks/baseline.csv` stores key benchmark metrics with tolerances, and `tests/test_baseline.cpp` fails if any of them drift. If your change *intends* to change physics:
+1. Regenerate it with `./build/ordbench --write-baseline benchmarks/baseline.csv`.
+2. Explain every changed value in the pull request.
+
+Never loosen a tolerance to make a test pass without a written justification.
+
 ## Reporting physics bugs
 
 Please include: vehicle definition, preset/assist configuration, timestep, the scenario

@@ -17,6 +17,7 @@ LodManager::LodManager(TrafficSystem& traffic, std::vector<VehicleDefinition> mo
     lod1_.resize(settings_.maxLod1);
     for (auto& c : lod1_) c.ground = GroundPrefetchCache(settings_.lod1Ground);
     requests_.reserve(1);
+    candidates_.reserve(traffic_.agents().size() + 64);
 }
 
 Real LodManager::desiredSpeedFor(const Lod1Car& c) const {
@@ -135,7 +136,8 @@ void LodManager::update(Real frameDt, const Vec3& focus, const GroundQuery& worl
     std::size_t freeSlots = 0;
     for (const auto& c : lod1_) freeSlots += c.used ? 0 : 1;
     if (freeSlots > 0) {
-        std::vector<std::pair<Real, std::size_t>> cand;
+        auto& cand = candidates_;
+        cand.clear();
         const auto& agents = traffic_.agents();
         const Real r2 = settings_.promoteRadius * settings_.promoteRadius;
         for (std::size_t i = 0; i < agents.size(); ++i) {

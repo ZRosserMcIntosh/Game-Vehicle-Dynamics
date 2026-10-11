@@ -103,3 +103,33 @@ Not yet measured: the UE-side cost of each ray (Chaos scene query), the cost of 
 - **Found:** disabling ABS mid-stop left its brake-pressure reduction in place for ~0.1 s while reporting ABS as inactive. That is a hidden aid. Switching presets while driving also changed the steering map instantly, producing a 124 m/s³ lateral jerk.
 - **Fix:** disabled ABS stops modulating immediately. A change of steering mapping crossfades the road-wheel angle linearly over 0.3 s. Physical aids still switch instantly.
 - **Evidence:** regression tests check full brake torque on the step after disabling ABS, and a bounded per-step steering change during preset switches.
+
+## What the headless numbers include, and what they don't (audit 2026-10-11)
+
+The scale benchmark (B25) and the per-vehicle costs are **standalone physics measurements**. They are kept separate from any Unreal measurement, and none has been taken in Unreal yet.
+
+| Cost | Included in headless figures? | Notes |
+|---|---|---|
+| Tire, suspension, drivetrain, assists, chassis integration | ✅ | Measured per tier |
+| Ground-cache rebuild (strip construction, interpolation) | ✅ | |
+| Engine ground queries | ⚠️ counted, not timed realistically | The test world answers a ray in tens of nanoseconds; a Chaos scene query costs far more. We report **rays per frame** so they can be multiplied by the measured UE ray cost. |
+| Host rigid-body integration | ✅ (simple integrator) | Chaos' solver cost is not included |
+| Collision resolution | ❌ | Chaos owns collisions |
+| Promotion/demotion (LOD swaps) | ✅ | Analytic placement: ~4 rays, no settling steps |
+| Memory allocation | ✅ none in steady state | `tests/test_alloc.cpp` asserts zero heap allocations per vehicle step (internal and host modes), per ground-cache rebuild and per LOD/traffic frame after warm-up |
+| Thread synchronisation (game ↔ physics) | ❌ | Exists only in the plugin; measure in UE |
+| Rendering, animation, audio, AI decision-making above lane following | ❌ | |
+
+**What we can claim:** on one 2.1 GHz Xeon thread, the *vehicle physics* for 1 player + 16 nearby AI + 300 traffic agents costs ~0.36 ms per 60 fps frame and issues ~104 ground rays per frame. With 1,000 traffic agents it's ~0.7 ms and ~150 rays.
+
+**What we cannot claim:** any whole-game frame rate, or a number of *interactive* vehicles in Unreal. LOD2 traffic agents are kinematic and do not collide physically; a collision must promote them first, which needs host collision events. All of that waits for UE profiling.
+
+### Memory per vehicle (order of magnitude)
+- `Vehicle`: a few KB of state plus a copy of its `VehicleDefinition`.
+- `GroundPrefetchCache`: about 120 samples × ~70 B per strip; 4 strips is ~35 KB per player car.
+- LOD2 agent: ~120 B. 1,000 agents is ~120 KB.
+
+### Large worlds and streaming
+- The core is double precision end to end, so positions 1,000 km from the origin keep sub-micrometre resolution.
+- The core never touches the world directly: it sees only `GroundQuery`/prefetch strips, so streaming is the host's concern. Strip misses extrapolate rather than fall through.
+- Multi-level roads (viadutos) depend on casting from the right deck; not yet benchmarked.

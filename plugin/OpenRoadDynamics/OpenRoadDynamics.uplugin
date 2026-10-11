@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 2,
+	"VersionName": "0.2",
+	"FriendlyName": "OpenRoad Dynamics",
+	"Description": "Vehicle dynamics (Magic Formula tires, implicit drivetrain, driver assists) running inside Chaos async physics. MIT licensed.",
+	"Category": "Physics",
+	"CreatedBy": "OpenRoad Dynamics contributors",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "OpenRoadDynamics",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

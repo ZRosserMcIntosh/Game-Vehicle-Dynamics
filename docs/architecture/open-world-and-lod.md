@@ -26,20 +26,21 @@ Grip values are typical engineering ranges for road-tire friction, cited only as
 Potholes, speed bumps (lombadas), curbs, drainage gutters and cobblestones are *geometry* sampled by the tire. They are never faked with noise. FM7 reportedly faked curb noise, and FM 2023 replaced that with 8 contact points per tire (Turn 10 via press, Medium–High confidence).
 
 Plan:
-1. 🧭 **Unsprung mass DOF** per corner, so the wheel can leave and re-strike the ground and harshness is physical.
-2. 🧭 **Multi-point contact patch**: N samples (start with 5: centre + 4 edges; evaluate 8) at the patch perimeter and centre. Contact plane and effective height come from a weighted fit, which acts as a geometric low-pass filter (envelope) over road features shorter than the patch. Benchmarks: curb strike, 10 cm pothole at 60/120 km/h, cobblestone stretch, timestep × sample-count matrix.
-3. 🧭 Sweep test (sphere or cylinder) as an alternative contact query for large obstacles.
+1. ✅ **Unsprung mass DOF** per corner, integrated implicitly. Wheels can leave and re-strike the ground. Heave and wheel-hop frequencies match the analytic quarter car (B22).
+2. ✅ **Multi-point contact patch**: 1, 5, 8 or 9 samples on a flat footprint, each a spring along its ground normal. This gives envelope filtering of features shorter than the patch, and longitudinal impact force on edges. Five samples converge on cobblestones at 120 Hz; a single point overstates harshness ~4× (B19/B20, [baseline-results.md](../benchmarks/baseline-results.md)).
+3. ✅ **Procedural micro-texture** for paving whose collision mesh is flat. It is deterministic in world position and costs no queries ([ADR-0003](../decisions/ground-prefetch.md)).
+4. 🧭 Sweep test (sphere or cylinder) as an alternative contact query for large obstacles.
 
 ## Fidelity tiers (LOD)
 
 | Tier | Who | Model | Rate | Est. cost / car / sim-second |
 |---|---|---|---|---|
-| **LOD0** | Player car (+ replay/photo car) | Full: this core | 240 Hz (default), 120–360 Hz configurable | ~1.2 ms at 240 Hz (5 µs/step measured, v0.1) |
-| **LOD1** | Nearby AI and remote players (≤ ~16 within ~150 m) | Same tire/drivetrain maths. Simplified: 1 contact point, no multi-point patch, no thermal, lumped drivetrain | 120 Hz (or 60 Hz) | target ≤ 0.3 ms |
-| **LOD2** | Ambient traffic (hundreds) | Kinematic path follower with a friction-circle limit and a simple longitudinal model. Wakes up to LOD1 on proximity or collision | 30 Hz, batched | target ≤ 10 µs |
+| **LOD0** ✅ | Player car (+ replay/photo car) | Full core: unsprung DOF, 5-point patch, ground prefetch | 60 Hz world × 4 substeps = 240 Hz (360 Hz × 8 samples option) | ~0.045 ms/frame measured |
+| **LOD1** ✅ | Nearby AI and remote players (≤ 16 within 150 m, demote at 190 m) | Same `Vehicle`, `VehicleFidelity::lod1()`: massless wheels, 1 contact point, minimal telemetry; `LaneFollowDriver`; one coarse ground strip per car per frame | 120 Hz | ~0.012 ms/car/frame measured |
+| **LOD2** ✅ | Ambient traffic (hundreds to 1,000+) | `TrafficSystem`: lane-following kinematic agents, IDM car-following, curvature and friction-circle speed limits, cosmetic pitch/roll, 1 ground ray every 8 steps | 30 Hz | ~0.4 µs/car/frame measured |
 | **LOD3** | Distant / off-screen traffic | Lane-graph agents, no physics | event-driven | ~0 |
 
-Transitions must preserve velocity and yaw rate and must not pop. State mapping LOD1 ↔ LOD0 is planned with tests (🧭). A collision always promotes both cars to at least LOD1.
+Transitions preserve speed and yaw rate and must not pop. `LodManager` places promoted cars analytically in static equilibrium (`Vehicle::placeOnGround`): about 4 rays and no settling steps. Measured on promotion: zero speed and yaw-rate jump, < 0.13 g vertical transient (B24). 🧭 A collision should promote both cars to at least LOD1; this needs a collision event from the host.
 
 ### Performance budget
 
@@ -67,7 +68,7 @@ Measured on flat ground (v0.1, sports RWD, SIMULATION preset):
 
 Source: [baseline-results.md](../benchmarks/baseline-results.md). µs/step is wall time on a 4-core Intel Xeon @ 2.1 GHz cloud container, single thread, noisy at this scale.
 
-Conclusion so far: **on smooth ground, rate barely matters** above 120 Hz, thanks to the implicit solver. The case for 240–360 Hz is **spatial sampling of rough ground at high speed** and input latency. It is not integration accuracy. That needs the rough-road benchmarks (roadmap M2) before choosing a default. The 1000 Hz 0–100 differs from 360 Hz in the 3rd digit partly because of wheelspin chaos at launch with no TCS. Tests check timestep sensitivity with TCS on.
+**Decision (v0.2):** on smooth ground, rate barely matters above 120 Hz thanks to the implicit solvers. On rough ground, the multi-point patch matters more than rate: 5 samples at 120 Hz beat 1 sample at 1000 Hz on cobblestones. Sharp impacts need 240 Hz (≈7%) to 360 Hz (≈1%). The world does **not** have to run at that rate: the car substeps inside a 60 Hz Chaos step, and ground rays come from per-frame prefetch, so rate costs no engine queries. Default: 60 Hz × 4 (240 Hz); quality option 360 Hz × 8 samples. Details and numbers: [ADR-0003](../decisions/ground-prefetch.md), [performance-and-risks.md](performance-and-risks.md).
 
 ## Multiplayer
 

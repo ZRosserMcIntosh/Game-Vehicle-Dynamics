@@ -9,11 +9,21 @@ Prioritised by "what unlocks measurable driving quality soonest". Each item has 
 - [x] Engine-independent core v0.1: MF tire + transient slip, implicit drivetrain solver, suspension, aero, assists, presets, telemetry
 - [x] Scenario library, 35 tests, `ordbench` report, CI
 
-## M1 — Unreal Engine 5 adapter (next)
+## v0.2 — Priorities 1–5 and lightness work (this session)
+
+- [x] Unsprung mass DOF (M2.1), multi-point contact patch + curb/pothole/cobblestone benchmarks (M2.2), fixed-rate decision (M2.5)
+- [x] Ground prefetch cache, vehicle-local substepping, procedural surface texture (ADR-0003)
+- [x] Host integration mode (`ChassisMode::External`) + UE frame conversions, parity tests
+- [x] LOD1 + LOD2 traffic + `LodManager`, transition and scale benchmarks (M5.1)
+- [x] Telemetry recorder, engine-agnostic debug draw + SVG
+- [x] Tire parameter generator (licensing risk)
+- [~] UE5 plugin: source written (M1.1–M1.5), **not compiled yet**, see `plugin/OpenRoadDynamics/README.md`
+
+## M1 — Unreal Engine 5 adapter (next: compile and validate)
 
 1. **Plugin skeleton** `plugin/OpenRoadDynamics` (Runtime + Editor modules). `UOpenRoadVehicleComponent` owns an `ord::Vehicle`. Build on UE 5.4+. *Accept:* compiles on Win64 with UE 5.4/5.5/5.6. Car drives on the proving-ground level.
-2. **Chaos async integration**: core steps inside the async physics callback. `GroundQuery` via physics-thread scene queries. Forces and torque go to the Chaos body (core chassis integration disabled). *Accept:* headless-vs-UE benchmark divergence < 1% on B1/B2/B4/B5. No `UObject` access on the physics thread.
-3. **Coordinate/unit adapter** (cm, left-handed) with unit tests.
+2. **Chaos async integration**: core steps inside the async physics callback (`stepSubstepped`, 60 Hz world × 4). Ground comes from a per-frame `GroundPrefetchCache` built on the game thread (no physics-thread scene queries). Forces and torque go to the Chaos body (`ChassisMode::External`). *Accept:* headless-vs-UE benchmark divergence < 1% on B1/B2/B4/B5. No `UObject` access on the physics thread.
+3. **Coordinate/unit adapter** (cm, left-handed): conversion maths done and unit-tested in `ord/host_frame.hpp`; UE wrappers pending compile.
 4. **Physical Material → SurfaceProperties** data asset.
 5. **Debug overlay**: per-wheel forces, slip, loads, assist activity. Telemetry CSV capture.
 6. **Proving-ground level** mirroring `TestTrackGround`.
@@ -54,8 +64,8 @@ Turbo boost/lag, supercharger, EV motor envelopes, hybrid, torque converter, vis
 
 ## Next five engineering priorities
 
-1. UE5 plugin skeleton + Chaos async integration (M1.1–M1.3)
-2. Unsprung mass DOF (M2.1)
-3. Multi-point contact patch + curb/pothole benchmarks (M2.2, B19–B20)
-4. Debug overlay + telemetry capture in UE (M1.5)
-5. LOD1 vehicle model + scale benchmark (M5.1)
+1. Compile the UE5 plugin on UE 5.4–5.6 and fix the API assumptions listed in its README (M1.1–M1.3)
+2. Headless-vs-Chaos parity validation (< 1% on B1/B2/B4/B5) and real UE ray-cost profiling (M1.2)
+3. Proving-ground level mirroring `TestTrackGround` + Chaos Vehicles A/B baseline (M1.6–M1.7)
+4. Wet model: water-film depth on strips, speed-dependent grip, aquaplaning (M3.2)
+5. Kinematic suspension (camber/toe curves, geometric solvers with KinetiForge attribution) (M2.3)

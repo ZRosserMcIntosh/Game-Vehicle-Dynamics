@@ -128,6 +128,9 @@ public:
     // Sets body speed and consistent wheel spin, slip and engine state
     // (tests and LOD promotion). Picks a sensible gear.
     void setRollingSpeed(Real forwardSpeed);
+    // Chooses the highest forward gear that keeps the engine above ~35% of the
+    // limiter at this road speed (used before placeOnGround for LOD promotion).
+    void selectGearForSpeed(Real forwardSpeed);
 
     // Per-wheel contact geometry of the last step (debug drawing).
     struct ContactDebug {

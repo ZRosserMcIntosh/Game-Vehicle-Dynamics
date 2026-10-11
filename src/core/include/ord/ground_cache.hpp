@@ -69,6 +69,17 @@ public:
 
     GroundPrefetchCache() = default;
     explicit GroundPrefetchCache(const Settings& s) : settings_(s) {}
+    GroundPrefetchCache(GroundPrefetchCache&& o) noexcept { *this = std::move(o); }
+    GroundPrefetchCache& operator=(GroundPrefetchCache&& o) noexcept {
+        settings_ = o.settings_;
+        strips_ = std::move(o.strips_);
+        stripCount_ = o.stripCount_;
+        raysLastRebuild_ = o.raysLastRebuild_;
+        roughStrips_ = o.roughStrips_;
+        fallback_ = o.fallback_;
+        misses_.store(o.misses_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
 
     // Rebuilds all strips from `source`. Call on the thread that owns the world.
     // Reuses memory: no allocation once warmed up for a given request count.

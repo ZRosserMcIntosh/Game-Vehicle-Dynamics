@@ -40,13 +40,15 @@ Implementation: [`src/scenarios/`](../../src/scenarios/) (shared by tests and to
 | B16 | **Slalom** (18 m cones) | Path follower, fixed speeds | max speed, peak yaw, lateral error | 🧭 |
 | B17 | **Drift initiation & recovery** | Scripted: clutch kick / handbrake / power-over; then countersteer driver | initiation success, sustained angle, recovery time; FUN vs SIM | 🧭 |
 | B18 | **Throttle-on / lift-off oversteer** | Steady cornering at 0.6 g, throttle step / lift | yaw rate deviation | 🧭 |
-| B19 | **Curb strike** | Real curb geometry at 60/120 km/h, 1 and N contact points | load spike, contact continuity, timestep × sample matrix | 🧭 (needs M2) |
-| B20 | **Pothole / cobblestone** | 10 cm pothole; cobblestone profile | wheel hop, load variation, harshness RMS | 🧭 (needs unsprung mass) |
+| B19 | **Curb strike** | Real curb geometry at 60/120 km/h, 1 and N contact points | load spike, contact continuity, timestep × sample matrix | ✅ (5-point patch, rate × samples matrix) |
+| B20 | **Pothole / cobblestone** | 10 cm pothole; cobblestone profile | wheel hop, load variation, harshness RMS | ✅ (pothole + cobblestones, geometry and texture) |
 | B21 | **Aquaplaning onset** | Water film depth sweep, speed ramp | onset speed vs film depth | 🧭 (needs wet model) |
-| B22 | **Suspension frequency response** | Heave/pitch sine sweep | natural frequencies vs analytic √(k/m) | 🧭 |
+| B22 | **Suspension frequency response** | Heave/pitch sine sweep | natural frequencies vs analytic √(k/m) | ✅ (heave and wheel hop vs analytic quarter car) |
 | B23 | **Controller vs wheel** | Same manoeuvre, gamepad pipeline vs direct-angle pipeline, scripted "human-like" inputs | path error, steering workload, spins | 🧭 |
-| B24 | **AI/traffic LOD transitions** | LOD0↔LOD1↔LOD2 swaps at speed | velocity/yaw discontinuity | 🧭 |
-| B25 | **Scale test** | 1 LOD0 + 16 LOD1 + 300 LOD2 | ms/frame, ground-query count | 🧭 |
+| B24 | **AI/traffic LOD transitions** | LOD0↔LOD1↔LOD2 swaps at speed | velocity/yaw discontinuity | ✅ |
+| B25 | **Scale test** | 1 LOD0 + 16 LOD1 + 300 LOD2 | ms/frame, ground-query count | ✅ (1 + 16 + 100/300/1000) |
+
+Additional checks added in v0.2: ground-cache accuracy vs direct queries, engine-ray budgets, cache misses, host-integration parity (same and different integrators), 60 Hz host + substeps vs internal 240 Hz. See `tests/test_contact.cpp`, `tests/test_host.cpp` and `tests/test_lod.cpp`.
 
 ## 3. Initial test environment
 

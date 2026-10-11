@@ -6,6 +6,7 @@
 #include <ostream>
 
 #include "ord/ground.hpp"
+#include "ord/presets.hpp"
 #include "ord/telemetry.hpp"
 
 namespace ord::scenarios {
@@ -655,6 +656,143 @@ FrequencyResult suspensionFrequencies(const RunConfig& cfgIn) {
     const Real disc = std::sqrt(b * b - 4 * a * c);
     r.heaveExpectedHz = std::sqrt((-b - disc) / (2 * a)) / (2 * kPi);
     r.wheelHopExpectedHz = std::sqrt((-b + disc) / (2 * a)) / (2 * kPi);
+    return r;
+}
+
+}  // namespace ord::scenarios
+
+#include <chrono>
+
+#include "reference_vehicles.hpp"
+
+namespace ord::scenarios {
+
+ScaleResult trafficScale(int agentCount, Real seconds, std::size_t maxLod1) {
+    using Clock = std::chrono::steady_clock;
+    ScaleResult res;
+    res.trafficAgents = agentCount;
+    // World: gentle hills; ring road of 4 lanes (3 for traffic, outer for the player).
+    TestTrackGround world([](Real x, Real y) { return 1.5 * std::sin(x / 60.0) * std::cos(y / 80.0); });
+    std::vector<LanePath> lanes;
+    for (int i = 0; i < 4; ++i) lanes.push_back(LanePath::circle({0, 0, 0}, 400.0 + 3.5 * i, 33.0, 512));
+    TrafficSystem traffic(lanes, TrafficSystem::Settings{});
+    std::uint64_t seed = 12345;
+    auto rnd = [&]() {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        return static_cast<Real>(seed >> 11) * (1.0 / 9007199254740992.0);
+    };
+    const int perLane = (agentCount + 2) / 3;
+    for (int i = 0; i < agentCount; ++i) {
+        const int lane = i % 3;
+        const Real L = lanes[static_cast<std::size_t>(lane)].length();
+        const Real s = (static_cast<Real>(i / 3) + 0.3 * rnd()) * L / perLane;
+        const Real vd = 14.0 + 10.0 * rnd();
+        traffic.addAgent(lane, s, vd, vd, i % 3);
+    }
+    LodSettings ls;
+    ls.maxLod1 = maxLod1;
+    LodManager lod(traffic, {vehicles::referenceHatchFwd(), vehicles::referenceSportsRwd(), vehicles::referenceSaloonAwd()}, ls);
+
+    // Player: LOD0, Chaos-like host at 60 Hz with 4 substeps and a ground cache.
+    Vehicle player(vehicles::referenceSportsRwd(), makePreset(DrivingPreset::Sport));
+    const LanePath& pl = lanes[3];
+    const Vec3 p0 = pl.pointAt(0);
+    player.reset({p0.x, p0.y, p0.z + 2.0}, 0.0, world);
+    player.selectGearForSpeed(30.0);
+    player.placeOnGround(p0.x, p0.y, 0.0, world, 30.0);
+    player.setChassisMode(ChassisMode::External, false);
+    LaneFollowDriver pilot;
+    pilot.reset(0);
+    GroundPrefetchCache playerCache;
+    std::vector<GroundStripRequest> req;
+    CountingGroundQuery playerWorld(world), lodWorld(world);
+
+    const Real frame = 1.0 / 60.0;
+    const int frames = static_cast<int>(seconds / frame);
+    Real lod0Seconds = 0;
+    for (int f = 0; f < frames; ++f) {
+        const auto t0 = Clock::now();
+        req.clear();
+        player.groundPrefetchRequests(req);
+        playerCache.rebuild(playerWorld, req.data(), req.size());
+        const DriverInput in = pilot.drive(player, pl, 32.0, frame);
+        player.stepSubstepped(frame, 4, in, playerCache);
+        // Host integration (same scheme as the core here; parity is tested elsewhere).
+        RigidBodyState s = player.state();
+        const ChassisForces& cf = player.chassisForces();
+        const VehicleDefinition& d = player.definition();
+        const Vec3 com = s.position + s.orientation.rotate(d.centerOfMass);
+        s.velocity += cf.force * (frame / d.mass);
+        const Mat3 R = s.orientation.toMatrix();
+        const Mat3 inv = R * Mat3::diagonal({1 / d.inertia.x, 1 / d.inertia.y, 1 / d.inertia.z}) * R.transposed();
+        const Mat3 I = R * Mat3::diagonal(d.inertia) * R.transposed();
+        s.angularVelocity += inv * (cf.torque - cross(s.angularVelocity, I * s.angularVelocity)) * frame;
+        const Real ang = length(s.angularVelocity) * frame;
+        if (ang > 1e-12) s.orientation = Quat::fromAxisAngle(s.angularVelocity, ang) * s.orientation;
+        s.orientation.normalize();
+        s.position = com + s.velocity * frame - s.orientation.rotate(d.centerOfMass);
+        player.setChassisState(s);
+        const auto t1 = Clock::now();
+        lod0Seconds += std::chrono::duration<Real>(t1 - t0).count();
+
+        lod.update(frame, player.centerOfMassWorld(), lodWorld);
+        res.maxLod1 = std::max(res.maxLod1, lod.stats().lod1Active);
+        for (const auto& c : lod.lod1())
+            if (c.used) res.maxLod1LateralError = std::max(res.maxLod1LateralError, std::abs(c.driver.lateralError()));
+        if (!isFinite(player.state().position)) { res.finite = false; break; }
+    }
+    for (const auto& c : lod.lod1())
+        if (c.vehicle && !isFinite(c.vehicle->state().position)) res.finite = false;
+    const Real nf = frames;
+    res.simulatedSeconds = frames * frame;
+    res.promotions = lod.stats().promotions;
+    res.demotions = lod.stats().demotions;
+    res.lod0MsPerFrame = 1000.0 * lod0Seconds / nf;
+    res.lod1MsPerFrame = 1000.0 * lod.stats().lod1Seconds / nf;
+    res.lod2MsPerFrame = 1000.0 * lod.stats().lod2Seconds / nf;
+    res.totalMsPerFrame = res.lod0MsPerFrame + res.lod1MsPerFrame + res.lod2MsPerFrame;
+    res.lod0RaysPerFrame = static_cast<Real>(playerWorld.count()) / nf;
+    res.lod2RaysPerFrame = static_cast<Real>(traffic.groundQueries()) / nf;
+    res.lod1RaysPerFrame = (static_cast<Real>(lodWorld.count()) - static_cast<Real>(traffic.groundQueries())) / nf;
+    return res;
+}
+
+TransitionResult lodTransition(Real speedKmh) {
+    TransitionResult r;
+    FlatGround world;
+    const Real v = kmhToMs(speedKmh);
+    std::vector<LanePath> lanes{LanePath::circle({0, 0, 0}, 250.0, 40.0)};
+    TrafficSystem traffic(lanes, TrafficSystem::Settings{});
+    traffic.addAgent(0, 100.0, v, v, 1);
+    LodSettings ls;
+    ls.maxLod1 = 1;
+    ls.promoteRadius = 1e6;  // promotion is triggered manually below
+    ls.demoteRadius = 2e6;
+    LodManager lod(traffic, {vehicles::referenceHatchFwd(), vehicles::referenceSportsRwd()}, ls);
+    // Cruise as LOD2 for 2 s so the agent is in steady state.
+    for (int i = 0; i < 120; ++i) traffic.step(1.0 / 60.0, &world);
+    const auto before = traffic.agents()[0];
+    lod.promote(0, world);
+    const Vehicle& car = *lod.lod1()[0].vehicle;
+    r.speedJumpPromote = std::abs(car.forwardSpeed() - before.speed);
+    r.yawRateJumpPromote = std::abs(car.yawRate() - before.yawRate);
+    Real t = 0;
+    Vec3 vPrev = car.state().velocity;
+    for (int f = 0; f < 120; ++f) {
+        lod.update(1.0 / 60.0, car.centerOfMassWorld(), world);
+        t += 1.0 / 60.0;
+        const Vec3 vNow = car.state().velocity;
+        if (t <= 1.0) r.maxVerticalAccelG = std::max(r.maxVerticalAccelG, std::abs((vNow.z - vPrev.z) * 60.0) / kGravity);
+        vPrev = vNow;
+        r.maxLateralError = std::max(r.maxLateralError, std::abs(lod.lod1()[0].driver.lateralError()));
+    }
+    const Real vBefore = car.forwardSpeed();
+    const Vec3 comBefore = car.centerOfMassWorld();
+    lod.demote(0);
+    const auto& a = traffic.agents()[0];
+    r.speedJumpDemote = std::abs(a.speed - vBefore);
+    const Vec3 lanePos = lanes[0].pointAt(a.s);
+    r.positionJumpDemote = std::hypot(lanePos.x - comBefore.x, lanePos.y - comBefore.y);
     return r;
 }
 

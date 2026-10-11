@@ -1,6 +1,6 @@
 # Architecture overview
 
-Status: v0.1 proof of concept. This document describes what exists now
+Status: v0.2 (core: unsprung mass, multi-point contact, ground prefetch, host integration, LOD tiers; UE plugin written but not yet compiled). This document describes what exists now
 (✅), what is designed but not built (🧭), and open questions (❓).
 
 ## Layers
@@ -9,7 +9,7 @@ Status: v0.1 proof of concept. This document describes what exists now
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Game (Brazil open world)        UI, cameras, audio, AI driving, net  │
 ├──────────────────────────────────────────────────────────────────────┤
-│ 🧭 UE5 adapter plugin  plugin/OpenRoadDynamics                         │
+│ 🟡 UE5 adapter plugin  plugin/OpenRoadDynamics (written, not compiled) │
 │   UOpenRoadVehicleComponent · Chaos async callback · GroundQuery via  │
 │   Chaos scene queries · PhysicalMaterial → SurfaceProperties ·        │
 │   force application to Chaos body · replication · debug overlay       │
@@ -18,7 +18,10 @@ Status: v0.1 proof of concept. This document describes what exists now
 │   Vehicle (LOD0) ─ tire · suspension · drivetrain solver · aero       │
 │   AssistSystem ─ input shaping · ABS · TCS · ESC · transmission       │
 │   Telemetry · FixedStepper · GroundQuery interface                    │
-│   🧭 LOD1/LOD2 vehicle models · state snapshot/restore for netcode     │
+│   ✅ GroundPrefetchCache · ChassisMode::External · stepSubstepped     │
+│   ✅ LOD1 (Vehicle lod1 fidelity) · LOD2 TrafficSystem · LodManager    │
+│   ✅ TelemetryRecorder · debug draw (+SVG) · tire parameter generator  │
+│   🧭 state snapshot/restore for netcode                                │
 ├──────────────────────────────────────────────────────────────────────┤
 │ ✅ ord_scenarios + ordbench + ord_tests  (headless, deterministic)    │
 └──────────────────────────────────────────────────────────────────────┘
@@ -40,24 +43,26 @@ The core returns state, forces and telemetry.
 ## One fixed step (`Vehicle::step`) ✅
 
 1. **Assists** turn `DriverInput` into `ActuatorCommands`, using sensor values from the previous step.
-2. **Suspension**: per corner, one ray from above the full-bump hardpoint along −Z_body. Compression is computed, then spring + preload, bump stop, bump/rebound damping and anti-roll bars.
-3. **Tire load and lateral transient slip**: `tanα'` is advanced with the implicit relaxation ODE.
-4. **Drivetrain / wheel / longitudinal-slip solve**: one small linear system, solved implicitly with stick/slip friction rows ([drivetrain-solver.md](drivetrain-solver.md)).
-5. **Forces**: combined-slip Magic Formula forces at each contact point (normal + longitudinal + lateral), self-aligning torque, aero drag and axle downforce, gravity.
-6. **Chassis integration**: semi-implicit Euler with gyroscopic term (headless mode). In UE, step 6 is replaced by applying the summed force and torque to the Chaos body (🧭).
-7. **Telemetry** frame.
+2. **Contact sampling**: 1, 5, 8 or 9 samples per wheel on a flat-footprint patch, queried through `GroundQuery`. The query is normally the `GroundPrefetchCache`, so it reaches no engine. A procedural surface micro-texture is added where the material declares one.
+3. **Suspension**: an implicit per-corner unsprung-mass DOF (tire vertical spring and damper per sample, suspension spring and damper, ARB, bump stops). LOD1 uses a massless wheel instead.
+4. **Tire slip and drivetrain**: lateral transient slip, then one implicit drivetrain/wheel/longitudinal-slip solve ([drivetrain-solver.md](drivetrain-solver.md)).
+5. **Forces**: combined-slip Magic Formula forces at the patch, tire normal force minus the wheel's relative inertia, aero, and gravity (unless the host applies it) → `ChassisForces`.
+6. **Chassis integration**: `ChassisMode::Internal` integrates in the core. `ChassisMode::External` hands the forces to the host (Chaos), which integrates and writes the state back with `setChassisState()`.
+7. **Telemetry** frame (full or minimal, per `VehicleFidelity`).
 
-## Timestep ✅/🧭
+`stepSubstepped(hostDt, k)` runs *k* internal steps per host step and returns impulse-equivalent forces. The world can stay at 60 Hz while the car runs at 240+ Hz ([ADR-0003](../decisions/ground-prefetch.md)).
 
-- The core assumes a fixed `dt`. `FixedStepper` provides accumulator stepping with a spiral-of-death cap and an interpolation alpha.
-- Measured (v0.1, [baseline-results.md](../benchmarks/baseline-results.md)): results converge at 120 Hz to within ~1–2% of 1000 Hz. Even 60 Hz is stable. This comes from the implicit wheel/drivetrain solve and the implicit relaxation ODEs.
-- Proposed defaults: **LOD0 player car 240 Hz** (headroom for curbs, cobblestones and multi-point contact at 300+ km/h), **LOD1 120 Hz**, **LOD2 30–60 Hz kinematic**. 360 Hz is supported but not assumed better: the deciding factor will be contact sampling on rough surfaces (spatial resolution: at 400 km/h, 240 Hz = 0.46 m between samples, 360 Hz = 0.31 m). Benchmark issue: see [roadmap](../roadmap.md).
+## Timestep ✅
+
+- Fixed `dt` per vehicle. Rate is decoupled from the world rate through `stepSubstepped`.
+- Smooth-road results converge by 120 Hz. With the 5-point patch, sharp impacts (curbs, potholes) are within ~7% at 240 Hz and ~1% at 360 Hz of a 1000 Hz reference.
+- **Default: 60 Hz world × 4 substeps (240 Hz) for LOD0**; 360 Hz with 8 samples as a quality option; LOD1 120 Hz; LOD2 30 Hz. See [performance-and-risks.md](performance-and-risks.md).
 
 ## Threading 🧭
 
 - One `Vehicle` is single-threaded and owns all its state. Different vehicles share no mutable state, so a pool of vehicles parallelises trivially (task per vehicle, or per batch of LOD1 cars).
 - In UE the step runs inside the Chaos async physics callback (`ISimCallbackObject` / async physics tick) on the physics thread. Inputs come in and outputs go out through double-buffered plain structs. **No `UObject` access from the physics thread.** KinetiForge's unsynchronised approach is the specific failure mode to avoid ([kinetiforge-analysis.md](../research/kinetiforge-analysis.md) §9).
-- `GroundQuery::raycast` must be callable from the physics thread. Chaos scene queries on the physics thread are the intended backend. ❓ Verify the lock and read semantics on the target UE version.
+- ✅ **No scene queries on the physics thread.** The game thread rebuilds a `GroundPrefetchCache` per frame and hands it over immutable (double-buffered). The physics thread only reads it ([ADR-0003](../decisions/ground-prefetch.md)).
 
 ## Large worlds 🧭
 
@@ -77,12 +82,16 @@ The core returns state, forces and telemetry.
 
 ## Module status
 
-| Module | v0.1 | Next |
+| Module | v0.2 | Next |
 |---|---|---|
-| Tire | Reduced MF + load sensitivity + combined slip + relaxation | Camber, MF 6.x full coefficients, thermal/pressure/wear, multi-point contact patch |
-| Suspension | Vertical spring/damper per corner, ARB, bump stop, massless wheel | Unsprung mass DOF, kinematic curves (camber/toe vs travel), geometric solvers (MacPherson, double wishbone, solid axle), anti-dive/squat |
-| Drivetrain | Engine curve, idle governor, limiter, clutch, gearbox, open/locked/clutch-LSD axle diffs, AWD open centre (+ locked/LSD centre) | Turbo lag/boost, hybrid/EV motors, viscous couplings, torque-vectoring, stall/start |
-| Aero | Drag, front/rear downforce | Ride-height sensitivity, yaw, active aero, slipstream |
-| Assists | Steering shaping, ABS, TCS, ESC, countersteer aid, auto/manual shifting, auto clutch | Brake assist, launch, FFB, reference speed estimator |
-| LOD | — | LOD1 simplified, LOD2 kinematic traffic |
-| UE adapter | — | Plugin skeleton, Chaos integration, debug overlay |
+| Tire | Reduced MF + load sensitivity + combined slip + relaxation; parameter generator from tire size/category | Camber, MF 6.x import, thermal/pressure/wear, wet model |
+| Contact | Flat-footprint multi-point patch (1/5/8/9), procedural surface texture | Sweep fallback for large obstacles |
+| Suspension | Unsprung-mass DOF (implicit), spring/damper/ARB/bump stops; massless mode for LOD1 | Kinematic curves and geometric solvers (MacPherson, double wishbone, solid axle) |
+| Drivetrain | Engine curve, governor, limiter, clutch, gearbox, open/locked/LSD diffs, AWD split | Turbo, EV/hybrid, torque converter, viscous couplings |
+| Aero | Drag, axle downforce | Ride-height sensitivity, active aero, slipstream |
+| Assists | Steering shaping, ABS, TCS, ESC, countersteer, auto/manual shifting | Brake assist, launch, FFB, speed estimator |
+| Ground | `GroundPrefetchCache` (adaptive strips, extrapolation on miss), `CountingGroundQuery` | Strip reuse across frames, multi-level roads |
+| Host integration | `ChassisMode::External`, `stepSubstepped`, `host_frame.hpp` | Chaos validation in UE |
+| LOD | LOD1 (`VehicleFidelity::lod1`), LOD2 `TrafficSystem` (IDM), `LodManager`, `LaneFollowDriver` | Lane changes, junctions, collisions promoting cars, parallel stepping |
+| Tooling | `TelemetryRecorder`, debug draw + `SvgDebugSink`, `ordbench` | CI report diff |
+| UE adapter | Written (`plugin/OpenRoadDynamics`), **not compiled** | Compile on UE 5.4–5.6, parity validation |

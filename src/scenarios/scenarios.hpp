@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ord/assists.hpp"
+#include "ord/lod_manager.hpp"
 #include "ord/ground_cache.hpp"
 #include "ord/tire.hpp"
 #include "ord/vehicle.hpp"
@@ -158,6 +159,35 @@ struct FrequencyResult {
     Real heaveHz = 0, heaveExpectedHz = 0;
     Real wheelHopHz = 0, wheelHopExpectedHz = 0;
 };
+// ---- Fidelity tiers (B24, B25) ----
+
+struct ScaleResult {
+    int trafficAgents = 0;
+    Real simulatedSeconds = 0;
+    std::size_t maxLod1 = 0;
+    std::uint64_t promotions = 0, demotions = 0;
+    // Mean CPU milliseconds per 60 fps frame (single thread, this machine).
+    Real lod0MsPerFrame = 0, lod1MsPerFrame = 0, lod2MsPerFrame = 0, totalMsPerFrame = 0;
+    // Engine ground rays per frame.
+    Real lod0RaysPerFrame = 0, lod1RaysPerFrame = 0, lod2RaysPerFrame = 0;
+    Real maxLod1LateralError = 0;   // m, AI lane tracking quality
+    bool finite = true;
+};
+// B25: 1 player car (LOD0, 60 Hz host x 4 substeps, ground cache) overtaking
+// `agents` traffic cars on a 4-lane ring road with gentle hills.
+ScaleResult trafficScale(int agents = 300, Real seconds = 20.0, std::size_t maxLod1 = 16);
+
+struct TransitionResult {
+    Real speedJumpPromote = 0;      // m/s, |LOD1 speed after - LOD2 speed before|
+    Real yawRateJumpPromote = 0;    // rad/s
+    Real maxVerticalAccelG = 0;     // first 1 s after promotion (no drop / pop)
+    Real maxLateralError = 0;       // m from the lane, first 2 s
+    Real speedJumpDemote = 0;       // m/s
+    Real positionJumpDemote = 0;    // m between LOD1 CoM and LOD2 lane position
+};
+// B24: promote a cruising traffic car on a curve, drive 2 s, demote.
+TransitionResult lodTransition(Real speedKmh = 70.0);
+
 // B22: symmetric undamped car, small heave impulse; measured vs analytic quarter-car modes.
 FrequencyResult suspensionFrequencies(const RunConfig& cfg);
 

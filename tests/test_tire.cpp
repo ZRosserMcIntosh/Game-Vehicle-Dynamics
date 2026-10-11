@@ -98,3 +98,31 @@ TEST_CASE("tire: lateral relaxation converges to steady slip and is stable for l
     for (int i = 0; i < 50; ++i) t.integrateLateralSlip(s2, 60, -3, 0.1);  // dt far larger than sigma/v
     CHECK_NEAR(s2.tanAlpha, 0.05, 1e-6);
 }
+
+#include "ord/tire_generator.hpp"
+
+TEST_CASE("tire generator: parses sizes and produces plausible, monotonic parameters") {
+    const auto s = parseTireSize("245/40R18");
+    CHECK(s.has_value());
+    CHECK_NEAR(s->sectionWidthMm, 245, 1e-9);
+    CHECK_NEAR(s->aspectRatio, 40, 1e-9);
+    CHECK_NEAR(s->rimDiameterIn, 18, 1e-9);
+    CHECK(!parseTireSize("hello").has_value());
+    TireSpec spec = *s;
+    const TireParams p = generateTireParams(spec);
+    CHECK_RANGE(p.radius, 0.31, 0.34);              // 245/40R18 is ~0.327 m unloaded
+    CHECK_RANGE(p.relaxationLengthY, 0.25, 0.6);
+    CHECK_RANGE(p.verticalStiffness, 2.0e5, 4.0e5);
+    CHECK(p.patchHalfLength < p.radius);
+    spec.category = TireCategory::Slick;
+    CHECK(generateTireParams(spec).muY > p.muY);
+    TireSpec wide = *s;
+    wide.sectionWidthMm = 305;
+    CHECK(generateTireParams(wide).cornerStiffness > p.cornerStiffness);
+    TireSpec eco = *s;
+    eco.category = TireCategory::Eco;
+    CHECK(generateTireParams(eco).rollingResistance < p.rollingResistance);
+    // Generated parameters must be accepted by the vehicle validator and the MF.
+    MagicFormulaTire t{p};
+    CHECK(t.pureLateral(4000, 0.1, 1.0) > 0);
+}

@@ -153,6 +153,26 @@ void Vehicle::setRollingSpeed(Real v) {
     accel_ = angAccel_ = {};
 }
 
+void Vehicle::selectGearForSpeed(Real v) {
+    const DrivetrainDef& dt = def_.drivetrain;
+    const auto& da = dt.drivenAxles.front();
+    const Real r = def_.wheels[static_cast<std::size_t>(def_.axles[da.axleIndex].leftWheel)].tire.radius;
+    const Real wheelOmega = std::abs(v) / r;
+    int gear = 1;
+    for (int g = 1; g <= static_cast<int>(dt.gearbox.forwardRatios.size()); ++g) {
+        const Real rpm = radSToRpm(wheelOmega * dt.gearbox.forwardRatios[static_cast<std::size_t>(g - 1)] *
+                                   da.differential.finalDrive);
+        if (rpm >= 0.35 * dt.engine.limiterRpm) gear = g;
+        else break;
+    }
+    // Never pick a gear that would put the engine over ~90% of the limiter.
+    while (gear > 1 &&
+           radSToRpm(wheelOmega * dt.gearbox.forwardRatios[static_cast<std::size_t>(gear - 1)] * da.differential.finalDrive) >
+               0.9 * dt.engine.limiterRpm)
+        --gear;
+    assists_.setGear(gear);
+}
+
 void Vehicle::staticWheelLoads(std::array<Real, kMaxWheels>& load) const {
     const Real W = def_.mass * kGravity;
     load.fill(0);

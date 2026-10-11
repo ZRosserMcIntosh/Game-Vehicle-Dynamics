@@ -7,14 +7,18 @@ and turning them off makes it unforgiving. The aim: Forza Horizon-level
 enjoyment on a gamepad and Forza Motorsport-level consequences with every aid
 off, in a giant open world.
 
-> **Status: v0.2 (October 2026).** The engine-independent core builds and
-> passes 55 automated tests on Linux (GCC 13, Clang 18, ASan/UBSan). It
-> includes unsprung mass, a multi-point tire contact patch, a per-frame
-> ground-query cache, host (Chaos) integration with vehicle-local
-> substepping, and three fidelity tiers (player / nearby AI / traffic).
+> **Status: v0.3 (October 2026).** The engine-independent core builds and
+> passes 78 automated tests in CI on Linux (GCC, Clang, ASan/UBSan), macOS
+> (Apple Clang) and Windows (MSVC). It includes unsprung mass, a multi-point
+> tire contact patch with geometric envelope probes for sharp edges, a
+> per-frame ground-query cache, host (Chaos) integration with vehicle-local
+> substepping, three fidelity tiers (player / nearby AI / traffic), parameter
+> validation plus a runtime fault guard, a zero-allocation steady state
+> (tested), and a golden benchmark baseline that CI checks.
 > **The Unreal Engine 5 plugin source is written but has not been compiled
-> yet**: there is no Unreal Engine in the development environment, so treat
-> it as a draft until it builds on UE 5.4+.
+> yet**, so no car has been driven in Unreal. There is no Unreal Engine in
+> the development environment. Treat the plugin as a draft until it builds on
+> UE 5.4+ ([plugin audit](plugin/OpenRoadDynamics/README.md)).
 > Nothing here is affiliated with or endorsed by Microsoft, Turn 10 Studios,
 > Playground Games or Epic Games. "Forza" is used only to describe publicly
 > documented design goals; we don't claim equivalence with any game.
@@ -41,6 +45,9 @@ any developer.
 | Assists | Speed-sensitive gamepad steering, ABS, TCS, ESC, countersteer aid, auto/manual shifting. Real actuators only; every intervention reported | `tests/test_assists.cpp` |
 | Lightness | **Ground prefetch cache** (per-frame adaptive strips; no scene queries from substeps or the physics thread), **vehicle-local substepping** inside a 60 Hz world, **host integration mode** for Chaos | `tests/test_contact.cpp`, `tests/test_host.cpp` |
 | Many vehicles | LOD1 nearby AI (`Vehicle` at low fidelity + lane-following driver), LOD2 kinematic traffic (IDM), `LodManager` with seamless promotion | `tests/test_lod.cpp` |
+| Robustness | Range validation of every definition field (incl. static-support and unsprung-mass sanity), `faulted()` runtime guard against non-finite state, fuzzed definitions, reversals, zero speed/reverse, contact loss, long-duration drift, determinism | `tests/test_robustness.cpp`, `tests/test_alloc.cpp` |
+| Vehicle range | FWD hatch, RWD sports, AWD saloon, 750 kg high-downforce race car (~1.7 g at 100 km/h → ~2.5 g at 250 km/h), ~476 km/h AWD hypercar | `tests/test_robustness.cpp` |
+| Regression guard | 13 headline metrics in `benchmarks/baseline.csv` with per-metric tolerances; changing them needs an explicit, reviewed regeneration | `tests/test_baseline.cpp` |
 | Tooling | Telemetry ring buffer + CSV, engine-agnostic debug draw (+SVG), `ordbench` report | `tools/ordbench` |
 | Unreal Engine 5 | Plugin `plugin/OpenRoadDynamics`: component, Chaos sim callback, game-thread ground prefetch, debug overlay. **Not compiled yet** | — |
 
@@ -52,15 +59,19 @@ Selected results for the fictional 300 kW RWD reference car ([full report](docs/
 | 100–0 km/h | 39.6 m (ABS) | 39.6 m (ABS) | 48.2 m (locked wheels) |
 | Skidpad R40 | 0.96 g | 1.02 g | 1.00 g |
 
-**How light is it?** Single-threaded on a 2.1 GHz cloud Xeon:
+**How light is it?** Headless core only, single-threaded on a 2.1 GHz cloud Xeon.
+This measures physics, ground-cache management and the analytic test ground. It does
+**not** include Unreal Engine scene queries, Chaos, rendering, animation, audio or game
+logic, so it is not a claim about how many vehicles a game can run
+([what these numbers do and don't mean](docs/architecture/performance-and-risks.md)):
 
 | Scene | CPU per 60 fps frame | Engine ground rays per frame |
 |---|---|---|
-| Player car: 60 Hz world × 4 substeps, 5-point contact, ground cache | ~0.045 ms | ~20 |
-| + 16 nearby AI cars (LOD1) + 300 traffic cars (LOD2) | ~0.36 ms total | ~104 total |
+| Player car: 60 Hz world × 4 substeps, 5-point contact + envelope probes, ground cache | ~0.06 ms | ~24 |
+| + 16 nearby AI cars (LOD1) + 300 traffic cars (LOD2) | ~0.37 ms total | ~108 total |
 | + 1000 traffic cars instead of 300 | ~0.69 ms total | ~150 total |
 
-On rough roads, the cached 60 Hz × 4 configuration is within ~7% of a 1000 Hz reference that uses direct queries, at ~15× fewer rays ([ADR-0003](docs/decisions/ground-prefetch.md), [risks & budget](docs/architecture/performance-and-risks.md)).
+On curbs and potholes, the cached 60 Hz × 4 configuration is within ~5–8% of a 2000 Hz reference (rate-fair, 60 Hz-window metrics), at ~4× fewer rays than direct 240 Hz querying ([ADR-0003](docs/decisions/ground-prefetch.md), [risks & budget](docs/architecture/performance-and-risks.md)).
 
 These are fictional cars tested against plausibility envelopes, not real-world validation.
 
@@ -71,9 +82,10 @@ Requires CMake ≥ 3.20 and a C++20 compiler.
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
-ctest --test-dir build --output-on-failure      # 55 test cases, ~3 s
+ctest --test-dir build --output-on-failure      # 78 test cases
 ./build/ordbench                                # Markdown benchmark report
 ./build/ordbench --csv-dir /tmp/traces          # per-step telemetry CSV for plotting
+./build/ordbench --write-baseline               # regenerate benchmarks/baseline.csv (reviewed changes only)
 ```
 
 ### Minimal use of the core
@@ -146,6 +158,11 @@ being quoted.
 Next: compile and validate the UE5 plugin (Chaos parity < 1%, real ray costs)
 → proving-ground level and Chaos Vehicles A/B → wet roads → kinematic
 suspension → multiplayer. See [docs/roadmap.md](docs/roadmap.md).
+
+## Versioning
+
+Pre-1.0 [semantic versioning](docs/RELEASING.md): minor versions may change the API and the
+handling. Every change to the golden baseline is called out in the release notes.
 
 ## Contributing & license
 

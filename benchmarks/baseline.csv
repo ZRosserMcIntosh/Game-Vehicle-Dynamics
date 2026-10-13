@@ -2,7 +2,7 @@
 #   ./build/ordbench --write-baseline benchmarks/baseline.csv
 # and explain every changed value in the pull request.
 metric,value,rel_tolerance
-sports_sport_0_100_s,4.708333333,0.01
+sports_sport_0_100_s,4.554166667,0.01
 sports_abs_100_0_m,37.9561941,0.01
 sports_locked_100_0_m,47.62248921,0.01
 sports_skidpad_r40_g,0.9955056531,0.01
@@ -13,5 +13,5 @@ sports_cobble_texture40_rms_g,0.02352091086,0.02
 sports_pothole60_rms_frame_g,0.09392858093,0.02
 sports_heave_hz,1.728162504,0.005
 sports_wheelhop_hz,13.6891203,0.005
-hatch_sim_0_100_s,9.125,0.01
+hatch_sim_0_100_s,8.625,0.01
 hatch_skidpad_r40_g,0.8613456501,0.01

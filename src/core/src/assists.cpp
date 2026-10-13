@@ -100,7 +100,7 @@ void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensor
             if (below > 0 && below < 0.88 * s.limiterRpm) requestShift(gear_ - 1, 0.12);
         }
         if (!braking && gear_ >= 1 && shiftTimer_ <= 0 && shiftCooldown_ <= 0) {
-            const Real up = s.limiterRpm * lerp(0.55, 0.96, thr);
+            const Real up = s.limiterRpm * lerp(0.55, 0.985, thr);  // full throttle: shift right at the limiter
             const Real down = s.limiterRpm * lerp(0.28, 0.50, thr);
             // Hold the gear while the driven wheels are spinning (burnouts, power slides): an
             // upshift there would only bog the engine. The limiter catches the revs instead.
@@ -121,6 +121,13 @@ void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensor
         if (shiftTimer_ > 0) {
             shiftTimer_ -= s.dt;
             cmd.clutchEngagement = 0;
+            if (!downshiftBlip_ && gear_ >= 1 && in.throttle > 0.5) {
+                // Upshift under power, clutch-to-clutch: the oncoming clutch slips and pulls the engine down
+                // to the new gear's speed while drive continues, with a brief torque reduction
+                // (ignition retard). No free-revving flare and no torque gap.
+                cmd.clutchEngagement = 0.55;
+                cmd.throttle *= 0.6;
+            }
             // Rev-match on downshifts: blip the throttle up to the new gear's speed so the clutch
             // re-engages without a jolt (or a locked rear axle).
             if (downshiftBlip_ && gear_ >= 1 && gear_ < static_cast<int>(s.gearRpm.size())) {

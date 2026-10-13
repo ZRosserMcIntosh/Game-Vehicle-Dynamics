@@ -1,0 +1,33 @@
+# Browser build (WebAssembly)
+
+`ord_web.cpp` is a thin C ABI over `ord::Vehicle` for the browser test track at
+<https://zrossermcintosh.com/sao-paulo/driving/>. It compiles the unmodified core with
+Emscripten and runs it at a fixed 1/360 s step. The page only renders and reads input.
+
+```sh
+source /path/to/emsdk/emsdk_env.sh
+web/build.sh                  # -> web/dist/ord.mjs + ord.wasm (~110 KB)
+node web/smoke_test.mjs       # 0-100 km/h per preset, steady circle, ground function
+```
+
+The proving ground (bump lane heights, wet and rough patches) is defined in `ord_web.cpp`
+and exported (`ord_ground_height`), so the page draws exactly the surface the physics sees.
+
+## State buffer
+
+`ord_state()` returns a `double*` that `ord_advance()` refreshes: a 32-value header, then 16 values per wheel.
+
+| Header | Meaning | Wheel | Meaning |
+|---|---|---|---|
+| 0–2 | body origin x, y, z (m, ISO 8855 world) | 0–1 | hardpoint x, y (body) |
+| 3–6 | orientation quaternion w, x, y, z | 2 | wheel-centre z (body) |
+| 7–10 | speed, lateral velocity, yaw rate, sideslip | 3 | radius |
+| 11–13 | body acceleration x, y, z (m/s²) | 4 | steer angle (rad) |
+| 14–15 | engine rpm, gear | 5 | wheel speed (rad/s) |
+| 16–17 | steer angle, throttle after TCS | 6 | load (N) |
+| 18–20 | TCS cut, countersteer angle, ESC yaw error | 7–8 | slip ratio, slip angle |
+| 21–23 | time, wheel count, faulted | 9–10 | Fx, Fy (N) |
+| 24–26 | shifting, wheel-0 radius, clutch | 11–13 | contact, locked, ABS active |
+| 27–30 | steer/throttle/brake input, ground queries | 14–15 | ESC brake torque, surface id |
+
+Performance in the browser is not comparable to the native benchmarks and is not used for any claim.

@@ -275,16 +275,16 @@ VehicleDefinition rosserStellaV8() {
     d.axles = {{0, 1, 24000}, {2, 3, 15000}};
     d.steeringAckermann = 0.5;
 
-    // Naturally aspirated 3.4 L flat-plane V8, 11,000 rpm limiter. Concept: two banks of a
-    // Honda F20C-style four (S2000) scaled from 2.0 L to 1.7 L. Torque scaled from the F20C's
-    // ~109 N*m per litre (~370 N*m); peak power ~390 kW (~530 PS) near 10,500 rpm.
+    // Game tune: naturally aspirated flat-plane V8, 9,000 rpm limiter, ~430 kW at 9,000 rpm.
+    // (The real-world concept - 3.4 L, 11,000 rpm from two scaled F20C-style banks - is noted
+    // in the project docs; the game uses this 9,000 rpm tune.)
     auto& e = d.drivetrain.engine;
-    e.torqueCurve = {{1000, 180}, {2500, 230}, {4000, 280}, {6000, 330}, {8000, 368},
-                     {9000, 372}, {10000, 358}, {10800, 335}, {11000, 325}, {11300, 250}};
-    e.idleRpm = 1100;
-    e.limiterRpm = 11000;
-    e.inertia = 0.11;              // light flywheel and short stroke: revs very fast
-    d.drivetrain.clutch.maxTorque = 650;
+    e.torqueCurve = {{900, 270}, {1500, 330}, {2500, 400}, {4000, 480}, {6000, 540},
+                     {7500, 520}, {8500, 480}, {9000, 455}, {9300, 380}};
+    e.idleRpm = 1000;
+    e.limiterRpm = 9000;
+    e.inertia = 0.14;
+    d.drivetrain.clutch.maxTorque = 900;
     d.drivetrain.gearbox.forwardRatios = {3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69};
     d.drivetrain.gearbox.reverseRatio = 2.9;
     d.drivetrain.gearbox.shiftTime = 0.08;
@@ -293,7 +293,7 @@ VehicleDefinition rosserStellaV8() {
     rear.axleIndex = 1;
     rear.torqueShare = 1.0;
     rear.differential.type = DifferentialType::ClutchLsd;
-    rear.differential.finalDrive = 6.6;   // short overall gearing for an 11,000 rpm engine
+    rear.differential.finalDrive = 4.9;
     d.drivetrain.drivenAxles = {rear};
 
     d.aero.dragArea = 0.76;

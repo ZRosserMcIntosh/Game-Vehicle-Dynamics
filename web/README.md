@@ -15,7 +15,7 @@ Without Emscripten, `WASI_SDK=/path/to/wasi-sdk web/build_wasi.sh` builds the sa
 becomes `ord.mjs` and exposes the identical `_ord_*` / `HEAPF64` interface.
 
 Cars (`ord_create` index): 0 Sports RWD, 1 Hatch FWD, 2 Saloon AWD, 3 Hypercar AWD, 4 Race car,
-5 Rosser Stella V8 (3.4 L flat-plane V8, 11,000 rpm; the São Paulo World game's own car).
+5 Rosser Stella V8 (flat-plane V8, 9,000 rpm; the São Paulo World game's own car).
 
 The proving ground (bump lane heights, wet and rough patches) is defined in `ord_web.cpp`
 and exported (`ord_ground_height`), so the page draws exactly the surface the physics sees.

@@ -85,6 +85,8 @@ struct VehicleSensors {
     int gear = 1;
     int forwardGears = 6;
     Real shiftTime = 0.25;
+    // Engine rpm the current road speed would give in each forward gear (index = gear, 1-based).
+    std::array<Real, 12> gearRpm{};
 };
 
 struct AssistReport {
@@ -141,6 +143,7 @@ private:
     int gear_ = 1;
     Real shiftTimer_ = 0;
     Real shiftCooldown_ = 0;
+    bool downshiftBlip_ = false;  // rev-match the engine during the current downshift
 };
 
 }  // namespace ord

@@ -78,11 +78,12 @@ Real AssistSystem::shapeSteer(const DriverInput& in, const VehicleSensors& s) {
 
 void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensors& s, ActuatorCommands& cmd) {
     shiftCooldown_ = std::max(0.0, shiftCooldown_ - s.dt);
-    auto requestShift = [&](int g) {
+    auto requestShift = [&](int g, Real cooldown = 0.6) {
         if (g == gear_ || g < -1 || g > s.forwardGears) return;
+        downshiftBlip_ = g >= 1 && g < gear_;
         gear_ = g;
         shiftTimer_ = cfg_.autoClutch ? s.shiftTime : 0.0;
-        shiftCooldown_ = s.shiftTime + 0.6;
+        shiftCooldown_ = s.shiftTime + cooldown;
     };
 
     if (cfg_.shiftMode == ShiftMode::Manual) {
@@ -90,7 +91,15 @@ void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensor
         if (in.shiftDown) requestShift(gear_ - 1);
     } else {
         const Real thr = clamp(in.throttle, 0.0, 1.0);
-        if (gear_ >= 1 && shiftTimer_ <= 0 && shiftCooldown_ <= 0) {
+        // Braking: drop a gear as soon as the lower gear fits under ~88 % of the limiter (with a
+        // throttle blip, below), like a dual-clutch box in its sport mode. This keeps the engine in
+        // its power band for the exit and adds engine braking through the shorter ratio.
+        const bool braking = clamp(in.brake, 0.0, 1.0) > 0.15 && s.speed > 3.0;
+        if (braking && gear_ > 1 && shiftTimer_ <= 0 && shiftCooldown_ <= 0) {
+            const Real below = s.gearRpm[static_cast<std::size_t>(gear_ - 1)];
+            if (below > 0 && below < 0.88 * s.limiterRpm) requestShift(gear_ - 1, 0.12);
+        }
+        if (!braking && gear_ >= 1 && shiftTimer_ <= 0 && shiftCooldown_ <= 0) {
             const Real up = s.limiterRpm * lerp(0.55, 0.96, thr);
             const Real down = s.limiterRpm * lerp(0.28, 0.50, thr);
             // Hold the gear while the driven wheels are spinning (burnouts, power slides): an
@@ -112,7 +121,14 @@ void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensor
         if (shiftTimer_ > 0) {
             shiftTimer_ -= s.dt;
             cmd.clutchEngagement = 0;
+            // Rev-match on downshifts: blip the throttle up to the new gear's speed so the clutch
+            // re-engages without a jolt (or a locked rear axle).
+            if (downshiftBlip_ && gear_ >= 1 && gear_ < static_cast<int>(s.gearRpm.size())) {
+                const Real target = std::min(s.gearRpm[static_cast<std::size_t>(gear_)], 0.98 * s.limiterRpm);
+                cmd.throttle = s.engineRpm < target - 150 ? 1.0 : 0.0;
+            }
         } else {
+            downshiftBlip_ = false;
             // Engine-speed-based engagement (like a centrifugal / launch clutch):
             // disengages to prevent stalling, engages fully above launch rpm.
             const Real lo = s.idleRpm * 1.05;

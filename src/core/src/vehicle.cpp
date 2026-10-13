@@ -137,6 +137,8 @@ VehicleSensors Vehicle::buildSensors(Real dt) const {
     s.gear = assists_.currentGear();
     s.forwardGears = drivetrain_.forwardGearCount();
     s.shiftTime = def_.drivetrain.gearbox.shiftTime;
+    for (int g = 1; g <= s.forwardGears && g < static_cast<int>(s.gearRpm.size()); ++g)
+        s.gearRpm[g] = radSToRpm(drivetrain_.engineOmegaForGear(g));
     return s;
 }
 

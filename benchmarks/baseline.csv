@@ -3,8 +3,8 @@
 # and explain every changed value in the pull request.
 metric,value,rel_tolerance
 sports_sport_0_100_s,4.708333333,0.01
-sports_abs_100_0_m,39.34324892,0.01
-sports_locked_100_0_m,48.07275027,0.01
+sports_abs_100_0_m,37.9561941,0.01
+sports_locked_100_0_m,47.62248921,0.01
 sports_skidpad_r40_g,0.9955056531,0.01
 sports_stepsteer_80_yaw_rads,0.2628708507,0.01
 sports_sinedwell9_max_sideslip_rad,0.5164861248,0.03

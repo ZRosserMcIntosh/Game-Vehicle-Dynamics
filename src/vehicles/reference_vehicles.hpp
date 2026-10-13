@@ -28,4 +28,8 @@ VehicleDefinition referenceRaceDownforce();
 // ~1500 kg, ~1100 kW AWD hypercar geared for ~450 km/h. Fictional.
 VehicleDefinition referenceHypercarAwd();
 
+// Rosser Stella V8: ~1480 kg mid-engine RWD, 3.4 L flat-plane V8, ~390 kW, 11,000 rpm,
+// 7-speed dual clutch. The game's own fictional car (São Paulo World).
+VehicleDefinition rosserStellaV8();
+
 }  // namespace ord::vehicles

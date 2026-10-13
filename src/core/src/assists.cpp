@@ -13,6 +13,25 @@ Real smoothstep(Real x) {
 Real slipRatio(Real omega, Real radius, Real groundSpeed, Real floor) {
     return (omega * radius - groundSpeed) / std::max(std::abs(groundSpeed), floor);
 }
+// Drive slip per driven axle, from the axle's mean wheel speed vs its mean ground speed.
+// Averaging left and right removes the inside/outside speed difference of a tight turn
+// (which a locking differential turns into apparent slip on the inner wheel) so it is not
+// mistaken for wheelspin. Returns the largest axle slip.
+Real drivenAxleSlip(const VehicleSensors& s) {
+    Real worst = 0;
+    for (int front = 0; front < 2; ++front) {
+        Real om = 0, vg = 0;
+        int n = 0;
+        for (std::size_t w = 0; w < s.wheelCount; ++w) {
+            if (!s.wheelDriven[w] || !s.wheelInContact[w] || s.wheelIsFront[w] != (front == 1)) continue;
+            om += s.wheelOmega[w] * s.wheelRadius[w];
+            vg += s.wheelGroundSpeed[w];
+            ++n;
+        }
+        if (n) worst = std::max(worst, slipRatio(om / n, 1.0, vg / n, 2.0));
+    }
+    return worst;
+}
 }  // namespace
 
 Real AssistSystem::shapeSteer(const DriverInput& in, const VehicleSensors& s) {
@@ -74,7 +93,10 @@ void AssistSystem::updateTransmission(const DriverInput& in, const VehicleSensor
         if (gear_ >= 1 && shiftTimer_ <= 0 && shiftCooldown_ <= 0) {
             const Real up = s.limiterRpm * lerp(0.55, 0.96, thr);
             const Real down = s.limiterRpm * lerp(0.28, 0.50, thr);
-            if (s.engineRpm > up && gear_ < s.forwardGears) requestShift(gear_ + 1);
+            // Hold the gear while the driven wheels are spinning (burnouts, power slides): an
+            // upshift there would only bog the engine. The limiter catches the revs instead.
+            const bool spinning = drivenAxleSlip(s) > 0.3;
+            if (s.engineRpm > up && gear_ < s.forwardGears && !spinning) requestShift(gear_ + 1);
             else if (s.engineRpm < down && gear_ > 1) requestShift(gear_ - 1);
         }
         // Drive/reverse selection when (nearly) stopped.
@@ -130,11 +152,7 @@ void AssistSystem::applyTcs(const VehicleSensors& s, ActuatorCommands& cmd) {
     const bool full = cfg_.tractionControl == InterventionLevel::Full;
     const Real target = full ? 0.08 : 0.15;
     const Real maxCut = full ? 1.0 : 0.8;
-    Real maxSlip = 0;
-    for (std::size_t w = 0; w < s.wheelCount; ++w) {
-        if (!s.wheelDriven[w] || !s.wheelInContact[w]) continue;
-        maxSlip = std::max(maxSlip, slipRatio(s.wheelOmega[w], s.wheelRadius[w], s.wheelGroundSpeed[w], 2.0));
-    }
+    const Real maxSlip = drivenAxleSlip(s);
     if (maxSlip > target && cmd.throttle > 0) tcsCut_ += s.dt * 6.0 * (maxSlip - target) / target;
     else tcsCut_ -= s.dt * 2.0;
     tcsCut_ = clamp(tcsCut_, 0.0, maxCut);

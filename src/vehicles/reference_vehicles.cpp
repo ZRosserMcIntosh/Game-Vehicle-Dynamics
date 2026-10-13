@@ -245,4 +245,61 @@ VehicleDefinition referenceHypercarAwd() {
     return d;
 }
 
+VehicleDefinition rosserStellaV8() {
+    // The Rosser Stella V8: Rosser McIntosh's own mid-engine design for the São Paulo World game.
+    // Fictional; layout and wheel positions match the Blender model (wheelbase 2.649 m).
+    VehicleDefinition d = referenceSportsRwd();
+    d.name = "Rosser Stella V8";
+    d.mass = 1480;                 // aluminium spaceframe
+    d.inertia = {480, 1950, 2150}; // mass concentrated mid-car
+    // 275/40 R21 front, 335/40 R21 rear (radii ~0.377 / 0.401 m, as modelled)
+    TireSpec fs{275, 40, 21, TireCategory::UltraHighPerformance, 3050};
+    TireSpec rs{335, 40, 21, TireCategory::UltraHighPerformance, 4200};
+    d.wheels.clear();
+    WheelDef f;
+    f.tire = generateTireParams(fs);
+    f.suspension.travel = 0.16;
+    f.suspension.springRate = 52000;
+    f.suspension.bumpDamping = 3400;
+    f.suspension.reboundDamping = 5200;
+    f.maxSteerAngle = 0.55;
+    f.maxBrakeTorque = 3800;       // carbon-ceramic
+    WheelDef r = f;
+    r.tire = generateTireParams(rs);
+    r.suspension.springRate = 64000;
+    r.maxSteerAngle = 0;
+    r.maxBrakeTorque = 2300;
+    r.handbrakeTorque = 2600;
+    // 42/58 static split: CoM 1.536 m behind the front axle, 1.113 m ahead of the rear.
+    addFourWheels(d, {1.536, -1.113, 0.836, 0.804, -0.05}, f, r);
+    d.axles = {{0, 1, 24000}, {2, 3, 15000}};
+    d.steeringAckermann = 0.5;
+
+    // Naturally aspirated 3.4 L flat-plane V8, 11,000 rpm limiter. Concept: two banks of a
+    // Honda F20C-style four (S2000) scaled from 2.0 L to 1.7 L. Torque scaled from the F20C's
+    // ~109 N*m per litre (~370 N*m); peak power ~390 kW (~530 PS) near 10,500 rpm.
+    auto& e = d.drivetrain.engine;
+    e.torqueCurve = {{1000, 180}, {2500, 230}, {4000, 280}, {6000, 330}, {8000, 368},
+                     {9000, 372}, {10000, 358}, {10800, 335}, {11000, 325}, {11300, 250}};
+    e.idleRpm = 1100;
+    e.limiterRpm = 11000;
+    e.inertia = 0.11;              // light flywheel and short stroke: revs very fast
+    d.drivetrain.clutch.maxTorque = 650;
+    d.drivetrain.gearbox.forwardRatios = {3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69};
+    d.drivetrain.gearbox.reverseRatio = 2.9;
+    d.drivetrain.gearbox.shiftTime = 0.08;
+    d.drivetrain.gearbox.kind = TransmissionKind::DualClutch;
+    DrivenAxle rear;
+    rear.axleIndex = 1;
+    rear.torqueShare = 1.0;
+    rear.differential.type = DifferentialType::ClutchLsd;
+    rear.differential.finalDrive = 6.6;   // short overall gearing for an 11,000 rpm engine
+    d.drivetrain.drivenAxles = {rear};
+
+    d.aero.dragArea = 0.76;
+    d.aero.frontDownforceArea = 0.16;
+    d.aero.rearDownforceArea = 0.26;
+    return d;
+}
+
 }  // namespace ord::vehicles

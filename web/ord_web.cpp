@@ -95,6 +95,7 @@ VehicleDefinition carByIndex(int i) {
         case 2: return vehicles::referenceSaloonAwd();
         case 3: return vehicles::referenceHypercarAwd();
         case 4: return vehicles::referenceRaceDownforce();
+        case 5: return vehicles::rosserStellaV8();
         default: return vehicles::referenceSportsRwd();
     }
 }

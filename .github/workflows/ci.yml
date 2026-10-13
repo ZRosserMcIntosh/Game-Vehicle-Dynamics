@@ -56,3 +56,15 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.12
+      - name: Build WebAssembly module
+        run: sh web/build.sh
+      - name: Smoke test in Node
+        run: node web/smoke_test.mjs

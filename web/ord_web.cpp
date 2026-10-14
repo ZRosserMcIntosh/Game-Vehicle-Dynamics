@@ -56,8 +56,48 @@ Real bumpLaneHeight(Real x, Real y) {
     return h;
 }
 
+// ---- Proving ground: the default start, west of the drag strip (x -480 .. -70) ----
+// A central lane (y = 0) runs east into the drag strip. Beside it:
+//  bump course (y = kPgBumpY): graded bumps 2-12 cm, washboard, alternating one-side bumps,
+//    a crest and a dip, a pothole;
+//  split-mu lane (y = kPgSplitY): left wheel track wet, right dry;
+//  dry skidpad R30 at (-300, 55); wet skidpad R25 inside the wet square x -200..-140, y 25..85.
+constexpr Real kPgBumpY = -30.0;
+constexpr Real kPgSplitY = -55.0;
+constexpr Real kPgX0 = -440.0, kPgX1 = -110.0;
+
+Real cosBump(Real x, Real c, Real len, Real h) {
+    const Real d = std::abs(x - c);
+    return d < 0.5 * len ? h * 0.5 * (1 + std::cos(2 * kPi * d / len)) : 0.0;
+}
+
+Real provingBumpHeight(Real x, Real y) {
+    const Real dy = y - kPgBumpY;
+    Real h = 0;
+    // graded cosine bumps across the lane: 2, 4, 6, 8 cm, a 10 cm speed hump, a sharp 12 cm ridge
+    h += cosBump(x, -420, 1.0, 0.02) + cosBump(x, -395, 1.2, 0.04) + cosBump(x, -370, 1.4, 0.06);
+    h += cosBump(x, -345, 1.6, 0.08) + cosBump(x, -320, 3.6, 0.10) + cosBump(x, -290, 0.6, 0.12);
+    // washboard: 1.5 cm ridges every 0.6 m for 30 m
+    if (x > -265 && x < -235) h += 0.015 * 0.5 * (1 - std::cos(2 * kPi * (x + 265) / 0.6));
+    // alternating one-side 8 cm bumps (left, right, left, right): roll and warp
+    for (int k = 0; k < 4; ++k) {
+        const bool left = (k % 2) == 0;
+        if ((left ? dy > 0 : dy < 0) && std::abs(dy) < 3.5) h += cosBump(x, -212 + 9.0 * k, 2.0, 0.08);
+    }
+    // crest (30 cm over 12 m) then a dip (20 cm over 10 m)
+    if (x > -175 && x < -163) h += 0.30 * 0.5 * (1 - std::cos(2 * kPi * (x + 175) / 12));
+    if (x > -155 && x < -145) h -= 0.20 * 0.5 * (1 - std::cos(2 * kPi * (x + 155) / 10));
+    // 7 cm pothole under the left wheel track
+    {
+        const Real px = x + 128, py = y - (kPgBumpY + 0.8), r = std::sqrt(px * px + py * py);
+        if (r < 0.7) h -= 0.07 * 0.5 * (1 + std::cos(kPi * r / 0.7));
+    }
+    return h;
+}
+
 Real provingGroundHeight(Real x, Real y) {
     if (y > kBumpLaneY - 4 && y < kBumpLaneY + 4 && x > 40 && x < 300) return bumpLaneHeight(x, y);
+    if (y > kPgBumpY - 4 && y < kPgBumpY + 4 && x > kPgX0 && x < kPgX1) return provingBumpHeight(x, y);
     return 0.0;
 }
 
@@ -105,6 +145,10 @@ void ensureGround() {
     g.ground = std::make_unique<TestTrackGround>(provingGroundHeight);
     g.ground->addPatch({250, 450, 25, 75, wetSurface(), 2});
     g.ground->addPatch({40, 300, kBumpLaneY - 4, kBumpLaneY + 4, bumpSurface(), 3});
+    // proving ground
+    g.ground->addPatch({kPgX0, kPgX1, kPgBumpY - 4, kPgBumpY + 4, bumpSurface(), 3});
+    g.ground->addPatch({-200, -140, 25, 85, wetSurface(), 2});               // wet skidpad square
+    g.ground->addPatch({kPgX0, kPgX1, kPgSplitY, kPgSplitY + 5, wetSurface(), 2});  // split-mu: left half wet
 }
 
 void publish() {
@@ -204,3 +248,5 @@ ORD_EXPORT int ord_state_header() { return kHeader; }
 ORD_EXPORT int ord_state_per_wheel() { return kPerWheel; }
 ORD_EXPORT double ord_ground_height(double x, double y) { return provingGroundHeight(x, y); }
 ORD_EXPORT double ord_bump_lane_y() { return kBumpLaneY; }
+ORD_EXPORT double ord_proving_bump_y() { return kPgBumpY; }
+ORD_EXPORT double ord_proving_split_y() { return kPgSplitY; }

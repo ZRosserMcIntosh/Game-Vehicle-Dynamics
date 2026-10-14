@@ -18,6 +18,8 @@ Cars (`ord_create` index): 0 Sports RWD, 1 Hatch FWD, 2 Saloon AWD, 3 Hypercar A
 5 Rosser Stella V8 (flat-plane V8, 9,000 rpm; the São Paulo World game's own car).
 
 The proving ground (bump lane heights, wet and rough patches) is defined in `ord_web.cpp`
+(including the default-start proving ground west of the drag strip: graded bump course, split-mu lane,
+dry R30 and wet R25 skidpads; `ord_proving_bump_y` / `ord_proving_split_y` give the lane positions)
 and exported (`ord_ground_height`), so the page draws exactly the surface the physics sees.
 
 ## State buffer

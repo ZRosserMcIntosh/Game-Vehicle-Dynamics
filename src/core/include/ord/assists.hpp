@@ -143,7 +143,8 @@ private:
     int gear_ = 1;
     Real shiftTimer_ = 0;
     Real shiftCooldown_ = 0;
-    bool downshiftBlip_ = false;  // rev-match the engine during the current downshift
+    bool downshiftBlip_ = false;
+    std::array<Real, kMaxWheels> tcBrake_{};  // brake-based traction control, per wheel (N*m)  // rev-match the engine during the current downshift
 };
 
 }  // namespace ord

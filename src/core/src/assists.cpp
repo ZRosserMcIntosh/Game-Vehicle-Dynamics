@@ -175,7 +175,33 @@ void AssistSystem::applyTcs(const VehicleSensors& s, ActuatorCommands& cmd) {
     const bool full = cfg_.tractionControl == InterventionLevel::Full;
     const Real target = full ? 0.08 : 0.15;
     const Real maxCut = full ? 1.0 : 0.8;
-    const Real maxSlip = drivenAxleSlip(s);
+    // Per driven axle: if only one wheel spins (the unloaded inner wheel in a tight turn), brake
+    // that wheel - the differential then sends the torque to the wheel with grip - and leave the
+    // throttle alone. The engine is only cut when the axle as a whole spins (the wheel with the
+    // most grip is over the target too).
+    Real maxSlip = 0;
+    for (int front = 0; front < 2; ++front) {
+        std::array<std::size_t, kMaxWheels> idx{};
+        std::array<Real, kMaxWheels> sl{};
+        std::size_t n = 0;
+        for (std::size_t w = 0; w < s.wheelCount; ++w) {
+            if (!s.wheelDriven[w] || !s.wheelInContact[w] || s.wheelIsFront[w] != (front == 1)) continue;
+            idx[n] = w;
+            sl[n] = slipRatio(s.wheelOmega[w], s.wheelRadius[w], s.wheelGroundSpeed[w], 2.0);
+            ++n;
+        }
+        if (n == 0) continue;
+        Real least = sl[0];
+        for (std::size_t i = 1; i < n; ++i) least = std::min(least, sl[i]);
+        maxSlip = std::max(maxSlip, least);
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t w = idx[i];
+            const Real excess = sl[i] - std::max(least, target);
+            const Real want = (n > 1 && excess > 0 && cmd.throttle > 0) ? std::min(1.0, excess / 0.3) * 0.35 * s.maxBrakeTorque[w] : 0.0;
+            tcBrake_[w] = approach(tcBrake_[w], want, 6.0 * s.maxBrakeTorque[w] * s.dt);
+            cmd.brakeTorque[w] += tcBrake_[w];
+        }
+    }
     if (maxSlip > target && cmd.throttle > 0) tcsCut_ += s.dt * 6.0 * (maxSlip - target) / target;
     else tcsCut_ -= s.dt * 2.0;
     tcsCut_ = clamp(tcsCut_, 0.0, maxCut);
@@ -200,7 +226,12 @@ void AssistSystem::applyEsc(const VehicleSensors& s, ActuatorCommands& cmd) {
     rRef = clamp(rRef, -rMax, rMax);
     const Real r = s.yawRate;
     const Real err = r - rRef;
-    const Real beta = std::atan2(s.lateralVelocity, v);
+    // Sideslip the steering itself asks for: at low speed the body slides sideways geometrically
+    // (rear axle as the turn centre), so that part is not oversteer. Fades out with speed.
+    const Real lr = s.wheelbase - s.cgToFrontAxle;
+    const Real betaKin = std::atan(lr / std::max(s.wheelbase, 0.5) * std::tan(clamp(cmd.steerAngle, -1.2, 1.2)));
+    const Real betaRef = betaKin / (1.0 + (v / 20.0) * (v / 20.0));
+    const Real beta = std::atan2(s.lateralVelocity, v) - betaRef;
     report_.escYawError = err;
 
     // Oversteer: car yawing more than intended, or sideslip beyond the limit.
@@ -223,10 +254,12 @@ void AssistSystem::applyEsc(const VehicleSensors& s, ActuatorCommands& cmd) {
         // Brake the front wheel on the outside of the yaw to create a restoring moment.
         brakeWheel(true, yawDir < 0, 3000.0 * over);
         if (full) cmd.throttle *= 0.5;
-    } else if (under > 0) {
-        // Brake the inside rear wheel to add yaw moment toward the intended path.
+    } else if (under > 0 && v > 10.0) {
+        // Brake the inside rear wheel to add yaw moment toward the intended path. Not at parking
+        // speeds: a car at full lock always "understeers" the reference model there, and trimming
+        // power then just stops it pulling away.
         brakeWheel(false, rRef > 0, 2000.0 * under);
-        if (full) cmd.throttle *= 0.7;
+        if (full && v > 15.0) cmd.throttle *= 0.7;
     }
 }
 
